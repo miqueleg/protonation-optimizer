@@ -37,7 +37,7 @@ This tool is particularly useful for preparing protein structures for molecular 
 
 4. Clone this repository:
 ```
-git clone https://github.com/yourusername/histidine-protonation-optimizer.git
+git clone https://github.com/miqueleg/histidine-protonation-optimizer
 cd histidine-protonation-optimizer
 ```
 
