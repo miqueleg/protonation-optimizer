@@ -1058,7 +1058,7 @@ def create_constraints_file(pdb_file, constraints_file):
     return
 
 
-def run_xtb_calculation(pdb_file, temp_dir, protonation, system_charge=None, log_dir="xtb_logs"):
+def run_xtb_calculation(pdb_file, temp_dir, protonation, system_charge=None, xtbopt='loose', solvent='ether', log_dir="xtb_logs"):
     """
     Run xTB calculation with fixed heavy atoms, ether solvent, and proper logging
     """
@@ -1108,8 +1108,8 @@ def run_xtb_calculation(pdb_file, temp_dir, protonation, system_charge=None, log
     with open(xtb_log, 'w') as log, open(xtb_error, 'w') as err:
         result = subprocess.run([
             "xtb", xyz_file,
-            "--opt",
-            "--alpb", "ether",
+            "--opt", xtbopt,
+            "--alpb", solvent,
             "--chrg", str(system_charge),
             "--input", constraints_file,
             "--gfn", "2",
@@ -1183,7 +1183,7 @@ def update_pdb_with_protonations(input_pdb, output_pdb, protonation_results):
     print(f"Optimized PDB with hydrogens saved to {output_pdb}")
     print(f"Hydrogen-free PDB for forcefields saved to {noh_pdb}")
 
-def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0):
+def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0, xtbopt='loose', solvent='ether'):
     """Main function to determine optimal histidine protonation states"""
     # Create log directory for xTB outputs
     log_dir = "xtb_logs"
@@ -1260,6 +1260,8 @@ def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0):
                             his_dir, 
                             protonation, 
                             system_charge,
+                            xtbopt=xtbopt,
+                            solvent=solvent,
                             log_dir=log_dir
                         )
                     except Exception as e:
@@ -1277,11 +1279,15 @@ def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0):
                     
                     alt_protonation = "HIE" if best_protonation == "HID" else "HID"
                     result_entry = {
-                        "Residue": histidine_labels,
-                        "Optimal Tautomer": final_tautomers,
-                        "Energy Difference (kcal/mol)": energy_differences,
-                        "System Charge": system_charges
-                    }
+                        "chain": chain_id,
+                        "residue": res_id,
+                        "original": original,
+                        "optimal": best_protonation,
+                        "HID_Energy": energies.get("HID"),
+                        "HIE_Energy": energies.get("HIE"),
+                        "Energy_Diff_kcal": energy_diffs[alt_protonation],
+                        "System_Charge": system_charge
+                        }
                     results.append(result_entry)
                     
                     print(f"  Optimal protonation: {best_protonation}, " 
@@ -1308,7 +1314,6 @@ def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0):
             print(f"Protonation results saved to {results_csv}")
             
             report_file = f"{output_base}_protonations_report.txt"
-            num_changed = sum(1 for result in results if result["Status"] == "Changed")
             
             with open(report_file, 'w') as f:
                 f.write(f"Histidine Protonation Analysis Report\n")
@@ -1316,7 +1321,7 @@ def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0):
                 f.write(f"Input PDB: {input_pdb}\n")
                 f.write(f"Output PDB: {output_pdb}\n")
                 f.write(f"Environment cutoff: {cutoff} Å¦\n\n")
-                f.write(f"Summary: {len(results)} histidines analyzed, {num_changed} protonation states changed\n\n")
+                f.write(f"Summary: {len(results)} histidines analyzed\n\n")
                 
                 if skipped_histidines:
                     f.write(f"WARNING: {len(skipped_histidines)} histidines skipped due to issues:\n")
@@ -1335,26 +1340,34 @@ def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0):
                 
                 f.write(tabulate(
                     table_data, 
-                    headers=["Residue", "Optimal Tautomer", "Energy Difference (kcal/mol)", "System Charge"]
+                    headers=["Residue", "Optimal Tautomer", "Energy Difference (kcal/mol)", "System Charge"],
                     tablefmt="grid",
-                    tablefmt="grid",       # Clean grid style
                     floatfmt=".2f",        # Consistent decimal places
                     colalign=("left", "center", "right", "center")  # Better alignment
                 ))
             
             print(f"Detailed report saved to {report_file}")
             
+            table_data = []
+            for r in results:
+                table_data.append([
+                    f"{r['chain']}:{r['residue']}", 
+                    r['optimal'], 
+                    f"{r['Energy_Diff_kcal']:.2f}",
+                    r['System_Charge'],
+                    ])
+
             print("\nHistidine Protonation State Analysis Results:")
             print("\nFinal Results:")
             print(tabulate(
-                results_df,
+                table_data,
                 headers=["Residue", "Optimal Tautomer", "ΔE (kcal/mol)", "System Charge"],
                 tablefmt="grid",
                 floatfmt=".2f",
                 showindex=False,
                 colalign=("left", "center", "right", "center")
             ))
-            print(f"\nSummary: {len(results)} histidines analyzed, {num_changed} protonation states changed")
+            print(f"\nSummary: {len(results)} histidines analyzed")
             
             if skipped_histidines:
                 print(f"\nWARNING: {len(skipped_histidines)} histidines were skipped due to issues")
@@ -1364,8 +1377,8 @@ def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0):
             print(f"\n{'='*40}")
             print(f"Summary Statistics:")
             print(f"{'='*40}")
-            print(f"Average energy difference: {results_df['Energy Difference (kcal/mol)'].mean():.2f} kcal/mol")
-            print(f"Most stabilized tautomer: {results_df.loc[results_df['Energy Difference (kcal/mol)'].idxmin(), 'Residue']}")
+            print(f"Average energy difference: {results_df['Energy_Diff_kcal'].mean():.2f} kcal/mol")
+            print(f"Most stabilized tautomer: {results_df.loc[results_df['Energy_Diff_kcal'].idxmin(), 'chain']}:{results_df.loc[results_df['Energy_Diff_kcal'].idxmin(), 'residue']}")
             print(f"{'='*40}")
 
         else:
@@ -1380,8 +1393,12 @@ if __name__ == "__main__":
     parser.add_argument("output_pdb", help="Output PDB with optimized protonations")
     parser.add_argument("--cutoff", type=float, default=5.0, 
                         help="Environment cutoff in Å ¦ (default: 5.0)")
+    parser.add_argument("--xtbopt", type=str, default='loose',
+                        help= "xtb convergence levels ¦ (default: loose)")
+    parser.add_argument("--solvent", type=str, default='ether',
+                        help='xtb Implicit Solvent (ALBP) ¦ (default: ether)')
     
     args = parser.parse_args()
-    qm_flipping_pipeline(args.input_pdb, args.output_pdb, args.cutoff)
+    qm_flipping_pipeline(args.input_pdb, args.output_pdb, args.cutoff, args.xtbopt, args.solvent)
 
 
