@@ -1177,7 +1177,7 @@ def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0):
         f.write(f"=====================\n")
         f.write(f"Input PDB: {input_pdb}\n")
         f.write(f"Output PDB: {output_pdb}\n")
-        f.write(f"Environment cutoff: {cutoff} ÃƒÆ’Ã¢â‚¬Â¦\n")
+        f.write(f"Environment cutoff: {cutoff} Å¦\n")
         f.write(f"Started at: {datetime.datetime.now()}\n\n")
     
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -1300,7 +1300,7 @@ def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0):
                 f.write(f"===================================\n\n")
                 f.write(f"Input PDB: {input_pdb}\n")
                 f.write(f"Output PDB: {output_pdb}\n")
-                f.write(f"Environment cutoff: {cutoff} ÃƒÆ’Ã¢â‚¬Â¦\n\n")
+                f.write(f"Environment cutoff: {cutoff} Å¦\n\n")
                 f.write(f"Summary: {len(results)} histidines analyzed, {num_changed} protonation states changed\n\n")
                 
                 if skipped_histidines:
@@ -1324,7 +1324,7 @@ def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0):
                 
                 f.write(tabulate(
                     table_data, 
-                    headers=["Position", "Original", "Optimal", "HID Energy (H)", "HIE Energy (H)", "ÃƒÅ½Ã¢â‚¬ÂE (kcal/mol)", "System Charge", "Status"],
+                    headers=["Position", "Original", "Optimal", "HID Energy (H)", "HIE Energy (H)", "ΔE (kcal/mol)", "System Charge", "Status"],
                     tablefmt="grid"
                 ))
             
@@ -1333,7 +1333,7 @@ def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0):
             print("\nHistidine Protonation State Analysis Results:")
             print(tabulate(
                 table_data, 
-                headers=["Position", "Original", "Optimal", "HID Energy (H)", "HIE Energy (H)", "ÃƒÅ½Ã¢â‚¬ÂE (kcal/mol)", "System Charge", "Status"],
+                headers=["Position", "Original", "Optimal", "HID Energy (H)", "HIE Energy (H)", "ΔE (kcal/mol)", "System Charge", "Status"],
                 tablefmt="grid"
             ))
             print(f"\nSummary: {len(results)} histidines analyzed, {num_changed} protonation states changed")
@@ -1353,7 +1353,7 @@ if __name__ == "__main__":
     parser.add_argument("input_pdb", help="Input PDB file")
     parser.add_argument("output_pdb", help="Output PDB with optimized protonations")
     parser.add_argument("--cutoff", type=float, default=5.0, 
-                        help="Environment cutoff in ÃƒÆ’Ã¢â‚¬Â¦ (default: 5.0)")
+                        help="Environment cutoff in Å ¦ (default: 5.0)")
     
     args = parser.parse_args()
     qm_flipping_pipeline(args.input_pdb, args.output_pdb, args.cutoff)
