@@ -51,6 +51,10 @@ With custom environment cutoff (default is 5.0 Å):
 ```
 python his_protonation_optimizer.py input.pdb output.pdb --cutoff 6.0
 ```
+Changing Optimization level and Solvent (default loose and ether) :
+```
+python his_protonation_optimizer.py input.pdb output.pdb --xtbopt crude --solvent water
+```
 
 
 This will:
