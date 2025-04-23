@@ -1142,8 +1142,23 @@ def run_xtb_calculation(pdb_file, temp_dir, protonation, system_charge=None, log
     return energy
 
 
+def create_no_hydrogens_pdb(input_pdb, output_pdb):
+    """Create a PDB file without hydrogens but with correct histidine names"""
+    print(f"Creating hydrogen-free version: {output_pdb}")
+    
+    with open(input_pdb, 'r') as f_in, open(output_pdb, 'w') as f_out:
+        for line in f_in:
+            if line.startswith(('ATOM', 'HETATM')):
+                # Check if it's a hydrogen using both element and atom name
+                element = line[76:78].strip()
+                atom_name = line[12:16].strip()
+                if element == 'H' or atom_name.startswith('H'):
+                    continue
+            f_out.write(line)
+
 def update_pdb_with_protonations(input_pdb, output_pdb, protonation_results):
-    """Update PDB with optimal protonation states"""
+    """Update PDB with optimal protonation states and create noH version"""
+    # Create the optimized PDB with hydrogens
     opt_protonations = {
         (result["chain"], result["residue"]): result["optimal"] 
         for result in protonation_results
@@ -1160,8 +1175,13 @@ def update_pdb_with_protonations(input_pdb, output_pdb, protonation_results):
                     line = line[:17] + opt_protonations[key].ljust(3) + line[20:]
             f_out.write(line)
     
-    print(f"Updated PDB saved to {output_pdb}")
-
+    # Create hydrogen-free version
+    base, ext = os.path.splitext(output_pdb)
+    noh_pdb = f"{base}_noH{ext}"
+    create_no_hydrogens_pdb(output_pdb, noh_pdb)
+    
+    print(f"Optimized PDB with hydrogens saved to {output_pdb}")
+    print(f"Hydrogen-free PDB for forcefields saved to {noh_pdb}")
 
 def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0):
     """Main function to determine optimal histidine protonation states"""
@@ -1257,15 +1277,10 @@ def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0):
                     
                     alt_protonation = "HIE" if best_protonation == "HID" else "HID"
                     result_entry = {
-                        "chain": chain_id,
-                        "residue": res_id,
-                        "original": original,
-                        "optimal": best_protonation,
-                        "HID_Energy": energies.get("HID"),
-                        "HIE_Energy": energies.get("HIE"),
-                        "Energy_Diff_kcal": energy_diffs[alt_protonation],
-                        "Status": "Changed" if best_protonation != original and original != "HIS" else "Unchanged",
-                        "System_Charge": system_charge
+                        "Residue": histidine_labels,
+                        "Optimal Tautomer": final_tautomers,
+                        "Energy Difference (kcal/mol)": energy_differences,
+                        "System Charge": system_charges
                     }
                     results.append(result_entry)
                     
@@ -1312,29 +1327,32 @@ def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0):
                 table_data = []
                 for r in results:
                     table_data.append([
-                        f"{r['chain']}:{r['residue']}", 
-                        r['original'], 
-                        r['optimal'], 
-                        f"{r['HID_Energy']:.6f}", 
-                        f"{r['HIE_Energy']:.6f}",
+                        f"{r['chain']}:{r['residue']}",
+                        r['optimal'],
                         f"{r['Energy_Diff_kcal']:.2f}",
-                        r['System_Charge'],
-                        r['Status']
+                        r['System_Charge']
                     ])
                 
                 f.write(tabulate(
                     table_data, 
-                    headers=["Position", "Original", "Optimal", "HID Energy (H)", "HIE Energy (H)", "ΔE (kcal/mol)", "System Charge", "Status"],
-                    tablefmt="grid"
+                    headers=["Residue", "Optimal Tautomer", "Energy Difference (kcal/mol)", "System Charge"]
+                    tablefmt="grid",
+                    tablefmt="grid",       # Clean grid style
+                    floatfmt=".2f",        # Consistent decimal places
+                    colalign=("left", "center", "right", "center")  # Better alignment
                 ))
             
             print(f"Detailed report saved to {report_file}")
             
             print("\nHistidine Protonation State Analysis Results:")
+            print("\nFinal Results:")
             print(tabulate(
-                table_data, 
-                headers=["Position", "Original", "Optimal", "HID Energy (H)", "HIE Energy (H)", "ΔE (kcal/mol)", "System Charge", "Status"],
-                tablefmt="grid"
+                results_df,
+                headers=["Residue", "Optimal Tautomer", "ΔE (kcal/mol)", "System Charge"],
+                tablefmt="grid",
+                floatfmt=".2f",
+                showindex=False,
+                colalign=("left", "center", "right", "center")
             ))
             print(f"\nSummary: {len(results)} histidines analyzed, {num_changed} protonation states changed")
             
@@ -1342,6 +1360,14 @@ def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0):
                 print(f"\nWARNING: {len(skipped_histidines)} histidines were skipped due to issues")
                 for chain, resid, reason in skipped_histidines:
                     print(f"  - {chain}:{resid} - {reason}")
+
+            print(f"\n{'='*40}")
+            print(f"Summary Statistics:")
+            print(f"{'='*40}")
+            print(f"Average energy difference: {results_df['Energy Difference (kcal/mol)'].mean():.2f} kcal/mol")
+            print(f"Most stabilized tautomer: {results_df.loc[results_df['Energy Difference (kcal/mol)'].idxmin(), 'Residue']}")
+            print(f"{'='*40}")
+
         else:
             print("No histidines were successfully analyzed. Check error messages above.")
 
