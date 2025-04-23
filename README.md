@@ -63,7 +63,7 @@ This will:
 3. Create both HID and HIE tautomers with proper hydrogen placement
 4. Run xTB optimization calculations on each tautomer
 5. Determine the optimal protonation state based on energy
-6. Save the result to `output.pdb` and `output_noH.pdb` (`output_noH.pdb` can be used directly for tleap or PDBfixer)
+6. Save the result to `output.pdb` and `output_noH.pdb` (`output_noH.pdb` can be used directly for Leap or PDBfixer)
 7. Generate a detailed report of the analysis
 
 ## Output Files
