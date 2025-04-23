@@ -57,7 +57,7 @@ This will:
 1. Find all histidine residues in `protein.pdb`
 2. For each histidine, extract a 5.0 Å environment
 3. Create both HID and HIE tautomers with proper hydrogen placement
-4. Run xTB calculations on each tautomer
+4. Run xTB optimization calculations on each tautomer
 5. Determine the optimal protonation state based on energy
 6. Save the result to `optimized_protein.pdb`
 7. Generate a detailed report of the analysis
