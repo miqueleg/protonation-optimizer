@@ -1171,9 +1171,10 @@ def create_constraints_file(pdb_file, constraints_file):
     return
 
 
-def run_xtb_calculation(pdb_file, temp_dir, protonation, system_charge=None, xtbopt='loose', solvent='ether', log_dir="xtb_logs"):
+def run_xtb_calculation(pdb_file, temp_dir, protonation, system_charge=None, xtbopt='loose', solvent='ether', log_dir="xtb_logs", mode='opt'):
     """
     Run xTB calculation with fixed heavy atoms, ether solvent, and proper logging
+    mode: 'opt' for optimization (default), 'SP' for single point calculation
     """
     calc_dir = os.path.join(temp_dir, protonation)
     os.makedirs(calc_dir, exist_ok=True)
@@ -1215,18 +1216,25 @@ def run_xtb_calculation(pdb_file, temp_dir, protonation, system_charge=None, xtb
     # Save constraints file to logs
     shutil.copy(constraints_file, f"{log_file_base}_constraints.inp")
     
-    print(f"    Running xTB with output to {xtb_log}")
+    # Display calculation mode
+    print(f"    Running xTB ({mode} mode) with output to {xtb_log}")
     
-    # Run xTB with enhanced parameters
+    # Build command based on mode
+    cmd = [
+        "xtb", xyz_file,
+        "--alpb", solvent,
+        "--chrg", str(system_charge),
+        "--input", constraints_file,
+        "--gfn", "2",
+    ]
+    
+    # Add optimization flag only for 'opt' mode
+    if mode == 'opt':
+        cmd.extend(["--opt", xtbopt])
+    
+    # Run xTB with conditional optimization
     with open(xtb_log, 'w') as log, open(xtb_error, 'w') as err:
-        result = subprocess.run([
-            "xtb", xyz_file,
-            "--opt", xtbopt,
-            "--alpb", solvent,
-            "--chrg", str(system_charge),
-            "--input", constraints_file,
-            "--gfn", "2",
-        ], stdout=log, stderr=err, text=True, cwd=calc_dir)
+        result = subprocess.run(cmd, stdout=log, stderr=err, text=True, cwd=calc_dir)
     
     # Extract energy from output
     energy = None
@@ -1253,7 +1261,6 @@ def run_xtb_calculation(pdb_file, temp_dir, protonation, system_charge=None, xtb
     
     print(f"    {protonation} energy: {energy} Hartree")
     return energy
-
 
 def create_no_hydrogens_pdb(input_pdb, output_pdb):
     """Create a PDB file without hydrogens but with correct histidine names"""
@@ -1296,7 +1303,7 @@ def update_pdb_with_protonations(input_pdb, output_pdb, protonation_results):
     print(f"Optimized PDB with hydrogens saved to {output_pdb}")
     print(f"Hydrogen-free PDB for forcefields saved to {noh_pdb}")
 
-def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0, xtbopt='loose', solvent='ether'):
+def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0, xtbopt='loose', solvent='ether', mode='opt'):
     """Main function to determine optimal histidine protonation states"""
     # Create log directory for xTB outputs
     log_dir = "xtb_logs"
@@ -1311,6 +1318,8 @@ def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0, xtbopt='loose', solv
         f.write(f"Input PDB: {input_pdb}\n")
         f.write(f"Output PDB: {output_pdb}\n")
         f.write(f"Environment cutoff: {cutoff} Å¦\n")
+        f.write(f"xTB mode: {mode}\n")
+        f.write(f"Solvent: {solvent}\n")
         f.write(f"Started at: {datetime.datetime.now()}\n\n")
     
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -1379,7 +1388,8 @@ def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0, xtbopt='loose', solv
                             system_charge,
                             xtbopt=xtbopt,
                             solvent=solvent,
-                            log_dir=log_dir
+                            log_dir=log_dir,
+                            mode=mode
                         )
                     except Exception as e:
                         print(f"  ERROR running xTB for {protonation}: {str(e)}")
@@ -1513,8 +1523,10 @@ if __name__ == "__main__":
                         help= "xtb convergence levels ¦ (default: loose)")
     parser.add_argument("--solvent", type=str, default='ether',
                         help='xtb Implicit Solvent (ALBP) ¦ (default: ether)')
-    
+    parser.add_argument("--mode", type=str, choices=['opt', 'SP'], default='opt',
+                        help='xTB calculation mode: opt for geometry optimization (default), SP for single point')
+
     args = parser.parse_args()
-    qm_flipping_pipeline(args.input_pdb, args.output_pdb, args.cutoff, args.xtbopt, args.solvent)
+    qm_flipping_pipeline(args.input_pdb, args.output_pdb, args.cutoff, args.xtbopt, args.solvent, args.mode)
 
 
