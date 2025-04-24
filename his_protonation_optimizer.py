@@ -59,82 +59,111 @@ def get_tetrahedral_vectors(bond_vector):
     return tetrahedral
 
 def find_histidines(pdb_file):
-    """Find all histidine residues in the PDB file"""
+    """Find histidine residues in any chain with proper residue numbering"""
     parser = PDBParser(QUIET=True)
-    structure = parser.get_structure("protein", pdb_file)
-    histidines = []
+    structure = parser.get_structure('input', pdb_file)
     
+    histidines = []
     for model in structure:
         for chain in model:
-            chain_id = chain.id
+            chain_id = chain.id  # Get actual chain ID
             for residue in chain:
-                if residue.get_resname() in ["HIS", "HID", "HIE"]:
+                res_id = residue.id[1]  # Tuple 
+                res_name = residue.get_resname().strip()
+                
+                if res_name in ['HIS', 'HID', 'HIE']:
                     histidines.append({
-                        "chain": chain_id,
-                        "resid": residue.id[1],
-                        "resname": residue.get_resname(),
-                        "unique_id": f"{chain_id}_{residue.id[1]}"
+                        'chain': chain_id,
+                        'resid': res_id,
+                        'resname': res_name,
+                        'residue_obj': residue  # Store the actual residue object
                     })
-    
     return histidines
 
 
-def extract_environment(pdb_file, his_info, cutoff=5.0):
-    """Extract histidine and surrounding residues within cutoff distance"""
-    chain_id = his_info["chain"]
-    res_id = his_info["resid"]
-    
-    # Load structure with MDTraj
-    traj = md.load(pdb_file)
-    
-    # Create a selection string that matches this specific histidine
-    selection = f"resname HIS HID HIE and resSeq {res_id}"
-    
-    his_indices = traj.topology.select(selection)
-    
-    if len(his_indices) == 0:
-        raise ValueError(f"No histidine found with residue number {res_id}")
-    
-    matching_residues = []
-    for atom_idx in his_indices:
-        atom = traj.topology.atom(atom_idx)
-        res = atom.residue
-        if res not in matching_residues:
-            matching_residues.append(res)
-    
-    chain_idx = ord(chain_id) - ord('A')
-    
-    target_res = None
-    for res in matching_residues:
-        if res.chain.index == chain_idx:
-            target_res = res
-            break
-    
-    if target_res is None:
-        raise ValueError(f"Could not find histidine in chain {chain_id} with residue number {res_id}")
-    
-    his_atoms = [atom.index for atom in target_res.atoms]
-    neighbors = set([target_res.index])
-    
-    for res in traj.topology.residues:
-        if res.index == target_res.index:
-            continue
-            
-        res_atoms = [atom.index for atom in res.atoms]
-        pairs = [(i, j) for i in his_atoms for j in res_atoms]
+def extract_environment(input_pdb, histidine, cutoff):
+    """Extract COMPLETE RESIDUES within cutoff of target histidine"""
+    try:
+        # Load trajectory
+        traj = md.load(input_pdb)
         
-        if pairs:
-            distances = md.compute_distances(traj, pairs, periodic=False)[0]
-            if np.min(distances) <= cutoff/10.0:  # Convert ÃƒÆ’Ã¢â‚¬Â¦ to nm
-                neighbors.add(res.index)
-    
-    env_atoms = []
-    for res_idx in neighbors:
-        env_atoms.extend([atom.index for atom in traj.topology.residue(res_idx).atoms])
-    
-    env_traj = traj.atom_slice(env_atoms)
-    return env_traj, target_res
-
+        print(f"  Loaded structure with {traj.n_residues} residues, {traj.n_atoms} atoms")
+        
+        # Find chain index for the target chain
+        chain_id = histidine['chain']
+        chain_index = None
+        for chain in traj.topology.chains:
+            if chain.chain_id == chain_id:
+                chain_index = chain.index
+                break
+        
+        if chain_index is None:
+            print(f"  ERROR: Chain {chain_id} not found in topology")
+            return None, None
+        
+        # Find target histidine residue
+        target_resid = histidine['resid']
+        target_residue = None
+        for res in traj.topology.residues:
+            if res.chain.index == chain_index and res.resSeq == target_resid:
+                target_residue = res
+                break
+        
+        if target_residue is None:
+            print(f"  ERROR: Residue {target_resid} not found in chain {chain_id}")
+            return None, None
+            
+        # Get atoms from target residue
+        target_atoms = [atom.index for atom in target_residue.atoms]
+        
+        # Convert cutoff from Angstroms to nanometers
+        cutoff_nm = cutoff / 10.0  # 1 Å = 0.1 nm
+        
+        # Find all atoms within cutoff of ANY atom in the target residue
+        neighbor_atoms = set()
+        for atom_i in target_atoms:
+            pairs = md.compute_neighbors(traj, cutoff_nm, np.array([atom_i]))
+            
+            # Handle the case where compute_neighbors returns a single integer
+            for pair in pairs:
+                if isinstance(pair, np.integer):
+                    # Single neighbor as numpy.int64
+                    neighbor_atoms.add(int(pair))
+                else:
+                    # Array of neighbors
+                    neighbor_atoms.update(pair)
+        
+        # Find which residues these atoms belong to
+        neighbor_residues = set()
+        for atom_idx in neighbor_atoms:
+            atom = traj.topology.atom(atom_idx)
+            neighbor_residues.add(atom.residue.index)
+        
+        # Get ALL atoms from these residues for complete residues
+        env_indices = []
+        for res_idx in neighbor_residues:
+            residue = traj.topology.residue(res_idx)
+            env_indices.extend([atom.index for atom in residue.atoms])
+        
+        # Add target residue atoms
+        env_indices.extend(target_atoms)
+        env_indices = sorted(set(env_indices))  # Remove duplicates
+        
+        if not env_indices:
+            print(f"  ERROR: No atoms found within {cutoff} Å of histidine")
+            return None, None
+        
+        # Create trajectory with full residues in the environment
+        env_traj = traj.atom_slice(env_indices)
+        print(f"  Extracted environment: {env_traj.n_residues} residues, {env_traj.n_atoms} atoms")
+        
+        return env_traj, histidine
+        
+    except Exception as e:
+        import traceback
+        print(f"  ERROR extracting environment: {str(e)}")
+        traceback.print_exc()
+        return None, None
 
 def identify_charged_residues(pdb_file):
     charged_residues = {}
@@ -340,6 +369,79 @@ def fix_charged_residues(input_pdb, output_pdb, charged_residues):
     
     print(f"  Corrected {len(charged_residues)} charged residues")
     return True
+
+def validate_histidine_cb_hydrogens(pdb_file, output_pdb):
+    """Ensure histidine CB atoms have exactly 2 hydrogen atoms"""
+    print("  Validating histidine CB hydrogen count...")
+
+    # Read structure
+    atoms = []
+    with open(pdb_file, 'r') as f:
+        for line in f:
+            if line.startswith(('ATOM', 'HETATM')):
+                atoms.append(line)
+
+    # Process atoms to build connectivity
+    parsed_atoms = []
+    for line in atoms:
+        atom_name = line[12:16].strip()
+        resname = line[17:20].strip()
+        chain_id = line[21]
+        if resname in ["HIS", "HID", "HIE"]:
+            element = line[76:78].strip() if len(line) >= 78 else atom_name[0]
+            parsed_atoms.append({
+                'line': line,
+                'id': int(line[6:11]),
+                'name': atom_name,
+                'element': element,
+                'coords': np.array([float(line[30:38]), float(line[38:46]), float(line[46:54])]),
+                'resid': int(''.join(filter(str.isdigit, line[22:26].strip()))),
+                'chain': chain_id,
+                'resname': resname
+            })
+
+    # Group atoms by residue
+    residues = {}
+    for atom in parsed_atoms:
+        key = (atom['chain'], atom['resid'])
+        if key not in residues:
+            residues[key] = []
+        residues[key].append(atom)
+
+    # Check each histidine residue's CB atoms
+    atoms_to_remove = set()
+    for (chain, resid), residue_atoms in residues.items():
+        # Find CB atom
+        cb = next((a for a in residue_atoms if a['name'] == 'CB'), None)
+        if not cb:
+            print(f"    Warning: Could not find CB in histidine {chain}:{resid}")
+            continue
+
+        # Find hydrogens attached to CB
+        cb_hydrogens = []
+        for atom in residue_atoms:
+            if atom['element'] == 'H' and np.linalg.norm(atom['coords'] - cb['coords']) < 1.2:
+                cb_hydrogens.append(atom)
+
+        # Check count and remove excess hydrogens
+        if len(cb_hydrogens) > 2:
+            print(f"    Found {len(cb_hydrogens)} hydrogens on CB of histidine {chain}:{resid}, removing {len(cb_hydrogens)-2}")
+            # Sort by atom ID and keep first 2
+            cb_hydrogens.sort(key=lambda a: a['id'])
+            for hydrogen in cb_hydrogens[2:]:
+                atoms_to_remove.add(hydrogen['id'])
+
+    # Write corrected structure
+    with open(output_pdb, 'w') as f_out:
+        for line in atoms:
+            atom_id = int(line[6:11])
+            if atom_id not in atoms_to_remove:
+                f_out.write(line)
+        f_out.write("END\n")
+
+    print(f"  Removed {len(atoms_to_remove)} excess hydrogens from histidine CB atoms")
+    return True
+
 def validate_histidine_tautomers(pdb_file, output_pdb):
     """
     Ensure histidine imidazole nitrogens have correct protonation:
@@ -849,8 +951,8 @@ def create_tautomer_variants(input_pdb, temp_dir):
     if not success:
         print("  ERROR: Failed to process with Open Babel")
         return {}
-    
-    # Step 3: Fix charged residues that OpenBabel neutralized
+
+    # Step 3.0: Fix charged residues that OpenBabel neutralized
     processed_pdb = os.path.join(temp_dir, "processed.pdb")
     success = fix_charged_residues(obabel_pdb, processed_pdb, charged_residues)
     
@@ -879,6 +981,17 @@ def create_tautomer_variants(input_pdb, temp_dir):
         
     # Continue with validated PDB
     processed_pdb = tautomer_validated_pdb
+
+    # Step 3.7: Histidine CB validation step
+    cb_fixed_pdb = os.path.join(temp_dir, "cb_fixed.pdb")
+    success = validate_histidine_cb_hydrogens(processed_pdb, cb_fixed_pdb)
+
+    if not success:
+        print("  ERROR: Failed to validate histidine CB hydrogens")
+        return {}
+
+    # Update processed_pdb to use the fixed version
+    processed_pdb = cb_fixed_pdb
 
     # Step 4: Identify current histidine hydrogens
     try:
@@ -1217,8 +1330,13 @@ def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0, xtbopt='loose', solv
         for i, his in enumerate(histidines):
             chain_id = his["chain"]
             res_id = his["resid"]
-            original = his["resname"]
             
+            try:
+                residue = his['residue_obj']
+            except KeyError:
+                print(f"  WARNING: Skipping histidine {chain_id}:{res_id} - Residue not found in structure")
+                continue
+
             print(f"Processing histidine {i+1}/{len(histidines)}: Chain {chain_id}, Residue {res_id}")
             his_dir = os.path.join(temp_dir, f"{chain_id}_{res_id}")
             os.makedirs(his_dir, exist_ok=True)
@@ -1231,7 +1349,6 @@ def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0, xtbopt='loose', solv
                 # Save environment to PDB
                 env_pdb = os.path.join(his_dir, "environment.pdb")
                 env_traj.save(env_pdb)
-                
                 # Create HID and HIE variants using Open Babel for hydrogens
                 # This now preserves charged residues and uses commas in constraints
                 variants = create_tautomer_variants(env_pdb, his_dir)
@@ -1281,7 +1398,6 @@ def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0, xtbopt='loose', solv
                     result_entry = {
                         "chain": chain_id,
                         "residue": res_id,
-                        "original": original,
                         "optimal": best_protonation,
                         "HID_Energy": energies.get("HID"),
                         "HIE_Energy": energies.get("HIE"),
