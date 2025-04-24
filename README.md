@@ -55,13 +55,16 @@ Changing Optimization level and Solvent (default loose and ether) :
 ```
 python his_protonation_optimizer.py input.pdb output.pdb --xtbopt crude --solvent water
 ```
-
+Using Single Point calculations instead of Optimization [Faster but less precise] (default opt) :
+```
+python his_protonation_optimizer.py input.pdb output.pdb --mode SP
+```
 
 This will:
 1. Find all histidine residues in `protein.pdb`
 2. For each histidine, extract a 5.0 Å environment
 3. Create both HID and HIE tautomers with proper hydrogen placement
-4. Run xTB optimization calculations on each tautomer
+4. Run xTB optimization or single point calculations on each tautomer
 5. Determine the optimal protonation state based on energy
 6. Save the result to `output.pdb` and `output_noH.pdb` (`output_noH.pdb` can be used directly for Leap or PDBfixer)
 7. Generate a detailed report of the analysis
