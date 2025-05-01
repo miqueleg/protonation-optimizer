@@ -84,6 +84,8 @@ def find_histidines(pdb_file):
 def run_propka_predictions(pdb_file):
     """Run PropKa3 and return dictionary of histidine pKa values with proper parsing"""
     print("Running PropKa3 for pKa predictions...")
+    pwd = os.getcwd()
+    os.chdir('/'.join(pdb_file.split('/')[:-1]))
     result = subprocess.run(
         ["propka3", pdb_file],
         stdout=subprocess.PIPE,
@@ -106,6 +108,8 @@ def run_propka_predictions(pdb_file):
                     resid = int(splitted[1])
                     pka = float(splitted[3])
                     pka_values[(chain, resid)] = pka
+
+    os.chdir(pwd)
     return pka_values
 
 
