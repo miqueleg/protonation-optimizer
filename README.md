@@ -1,11 +1,12 @@
 # Histidine Protonation State Optimizer
 
-A quantum mechanics-based tool for determining optimal histidine protonation states (HID/HIE) in protein structures for molecular dynamics simulations.
+A quantum mechanics-based tool for determining optimal histidine protonation states in protein structures for molecular dynamics simulations.
 
 ## Description
 
-This tool analyzes protein structures and determines the energetically favorable protonation state for each histidine residue using the xTB semi-empirical quantum chemistry method. It accurately handles the two neutral tautomeric forms of histidine by:
+This tool analyzes protein structures and determines the energetically favorable protonation state for each histidine residue using the xTB semi-empirical quantum chemistry method (HID/HIE). It accurately handles the two neutral tautomeric forms of histidine by:
 
+0. Checks pKa using the PropKa3 tool. It determines HIP protonation based on pKa
 1. Extracting the local environment around each histidine residue
 2. Generating both HID (delta-protonated) and HIE (epsilon-protonated) tautomers
 3. Special handling of charged residues (ASP, GLU, LYS, ARG) with proper proton positioning
@@ -26,6 +27,7 @@ This tool is particularly useful for preparing protein structures for molecular 
 ### External Software
 - Open Babel (for hydrogen placement)
 - xTB (for quantum mechanical calculations)
+- PropKa3
 
 ## Installation
 
@@ -35,7 +37,9 @@ This tool is particularly useful for preparing protein structures for molecular 
 
 3. Install xTB:
 
-4. Clone this repository:
+4. Install PropKa3
+   
+5. Clone this repository:
 ```
 git clone https://github.com/miqueleg/histidine-protonation-optimizer
 cd histidine-protonation-optimizer
@@ -84,7 +88,7 @@ The tool generates several outputs:
 
 ## Limitations
 
-- Only handles the two neutral tautomers (HID and HIE), not the protonated form (HIP)
+- Only handles the two neutral tautomers via QM (HID and HIE), not the protonated form (HIP). The latest is only determined via pKa calculation
 - Processes each histidine independently; for histidines in close proximity, results may not capture cooperative effects (not yet)
 - Requires proper installation and configuration of xTB and Open Babel
 
