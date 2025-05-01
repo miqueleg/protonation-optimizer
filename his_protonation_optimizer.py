@@ -18,6 +18,7 @@ import re
 import shutil
 import datetime
 
+
 def normalize(vector):
     """Return the normalized vector"""
     norm = np.linalg.norm(vector)
@@ -79,6 +80,33 @@ def find_histidines(pdb_file):
                         'residue_obj': residue  # Store the actual residue object
                     })
     return histidines
+
+def run_propka_predictions(pdb_file):
+    """Run PropKa3 and return dictionary of histidine pKa values with proper parsing"""
+    print("Running PropKa3 for pKa predictions...")
+    result = subprocess.run(
+        ["propka3", pdb_file],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    
+    # Check for errors
+    if result.returncode != 0:
+        print(f"PropKa3 Error: {result.stderr}")
+        return {}
+
+    pka_values = {}
+    with open(pdb_file.split('.')[0]+'.pka', 'r') as propkaout:
+        for line in propkaout:
+            if "HIS " in line[:5]:
+                splitted = line.split()
+                if len(splitted) > 15:
+                    chain = splitted[2]
+                    resid = int(splitted[1])
+                    pka = float(splitted[3])
+                    pka_values[(chain, resid)] = pka
+    return pka_values
 
 
 def extract_environment(input_pdb, histidine, cutoff):
@@ -1276,239 +1304,164 @@ def create_no_hydrogens_pdb(input_pdb, output_pdb):
                     continue
             f_out.write(line)
 
-def update_pdb_with_protonations(input_pdb, output_pdb, protonation_results):
-    """Update PDB with optimal protonation states and create noH version"""
-    # Create the optimized PDB with hydrogens
+def update_pdb_with_protonations(input_pdb, output_pdb, results):
+    """Update PDB with optimal protonation states"""
     opt_protonations = {
-        (result["chain"], result["residue"]): result["optimal"] 
-        for result in protonation_results
+        (res["chain"], res["residue"]): res["Optimal"]  # Now using correct keys
+        for res in results
     }
     
     with open(input_pdb, 'r') as f_in, open(output_pdb, 'w') as f_out:
         for line in f_in:
             if line.startswith('ATOM') and line[17:20].strip() in ["HIS", "HID", "HIE"]:
                 chain_id = line[21]
-                residue_num = int(line[22:26])
+                residue_num = int(line[22:26].strip())
                 key = (chain_id, residue_num)
                 
                 if key in opt_protonations:
                     line = line[:17] + opt_protonations[key].ljust(3) + line[20:]
             f_out.write(line)
-    
-    # Create hydrogen-free version
-    base, ext = os.path.splitext(output_pdb)
-    noh_pdb = f"{base}_noH{ext}"
-    create_no_hydrogens_pdb(output_pdb, noh_pdb)
-    
-    print(f"Optimized PDB with hydrogens saved to {output_pdb}")
-    print(f"Hydrogen-free PDB for forcefields saved to {noh_pdb}")
-
-def qm_flipping_pipeline(input_pdb, output_pdb, cutoff=5.0, xtbopt='loose', solvent='ether', mode='opt'):
-    """Main function to determine optimal histidine protonation states"""
-    # Create log directory for xTB outputs
+ 
+def qm_flipping_pipeline(input_pdb, output_pdb, args):
+    """Main pipeline function with PropKa3 integration and proper table handling"""
+    # Create log directory
     log_dir = "xtb_logs"
     os.makedirs(log_dir, exist_ok=True)
     print(f"xTB logs will be saved to: {os.path.abspath(log_dir)}")
     
-    # Create a main log file
-    main_log = os.path.join(log_dir, "qm_flipping.log")
-    with open(main_log, 'w') as f:
-        f.write(f"QM Flipping Pipeline Log\n")
-        f.write(f"=====================\n")
-        f.write(f"Input PDB: {input_pdb}\n")
-        f.write(f"Output PDB: {output_pdb}\n")
-        f.write(f"Environment cutoff: {cutoff} Å¦\n")
-        f.write(f"xTB mode: {mode}\n")
-        f.write(f"Solvent: {solvent}\n")
-        f.write(f"Started at: {datetime.datetime.now()}\n\n")
-    
+    # Run PropKa3 predictions
+    pka_values = run_propka_predictions(input_pdb)
+    print(pka_values)    
     with tempfile.TemporaryDirectory() as temp_dir:
-        print(f"Finding histidines in {input_pdb}...")
+        # Process entire structure with OpenBabel
+        obabel_pdb = os.path.join(temp_dir, "obabel_processed.pdb")
+        process_with_obabel(input_pdb, obabel_pdb)
+        
+        # Identify and fix charged residues
+        charged_residues = identify_charged_residues(input_pdb)
+        corrected_pdb = os.path.join(temp_dir, "corrected.pdb")
+        fix_charged_residues(obabel_pdb, corrected_pdb, charged_residues)
+        
+        # Find histidines and process them
         histidines = find_histidines(input_pdb)
         print(f"Found {len(histidines)} histidine residues")
-        
-        with open(main_log, 'a') as f:
-            f.write(f"Found {len(histidines)} histidine residues\n")
-            for his in histidines:
-                f.write(f"  {his['chain']}:{his['resid']} ({his['resname']})\n")
-            f.write("\n")
         
         results = []
         skipped_histidines = []
         
-        for i, his in enumerate(histidines):
-            chain_id = his["chain"]
-            res_id = his["resid"]
+        for his in histidines:
+            chain = his["chain"]
+            resid = his["resid"]
+            resname = his["resname"]
             
+            # Initialize result entry with all possible fields
+            result_entry = {
+                "chain": chain,
+                "residue": resid,
+                "Position": f"{chain}:{resid}",
+                "Original": resname,
+                "Optimal": resname,
+                "pKa": pka_values.get((chain, resid), "N/A"),
+                "HID Energy (H)": "N/A",
+                "HIE Energy (H)": "N/A",
+                "ΔE (kcal/mol)": "N/A",
+                "Note": "No calculation",
+                "Status": "Unchanged"
+            }
+            ph = args.ph
             try:
-                residue = his['residue_obj']
-            except KeyError:
-                print(f"  WARNING: Skipping histidine {chain_id}:{res_id} - Residue not found in structure")
-                continue
+                # Check PropKa predictions
+                his_pka = pka_values.get((chain, resid))
+                if his_pka:
+                    result_entry["pKa"] = his_pka
+                    
+                    # Automatic protonation state assignment
+                    if his_pka > ph + 1.0:
+                        result_entry.update({
+                            "Optimal": "HIP",
+                            "Note": f"Auto-assigned HIP ({his_pka:.1f} > {ph}+1)",
+                            "Status": "PropKa assigned"
+                        })
+                        results.append(result_entry)
+                        continue
+                    elif his_pka < ph - 1.0:
+                        result_entry["Note"] = f"Auto-deprotonated (pKa {his_pka:.1f} < pH-1)"
+                    else:
+                        result_entry["Note"] = f"Buffer zone (pKa {his_pka:.1f}) - QM verification needed"
 
-            print(f"Processing histidine {i+1}/{len(histidines)}: Chain {chain_id}, Residue {res_id}")
-            his_dir = os.path.join(temp_dir, f"{chain_id}_{res_id}")
-            os.makedirs(his_dir, exist_ok=True)
-            
-            try:
-                # Extract environment
-                env_traj, target_res = extract_environment(input_pdb, his, cutoff)
-                print(f"  Extracted environment: {env_traj.n_residues} residues, {env_traj.n_atoms} atoms")
-                
-                # Save environment to PDB
-                env_pdb = os.path.join(his_dir, "environment.pdb")
+                # QM processing for non-automatic cases
+                env_traj, target_res = extract_environment(corrected_pdb, his, args.cutoff)
+                env_pdb = os.path.join(temp_dir, f"{chain}_{resid}_env.pdb")
                 env_traj.save(env_pdb)
-                # Create HID and HIE variants using Open Babel for hydrogens
-                # This now preserves charged residues and uses commas in constraints
-                variants = create_tautomer_variants(env_pdb, his_dir)
+
+                # Create tautomer variants
+                variants = create_tautomer_variants(env_pdb, temp_dir)
                 if not variants:
                     raise ValueError("Failed to create tautomer variants")
-                
-                # Verify that tautomers are correct
+
+                # Verify tautomers
                 verify_results = verify_tautomers(variants)
-                
-                # Save PDB files to logs for inspection
-                for protonation, pdb_file in variants.items():
-                    log_pdb = os.path.join(log_dir, f"{chain_id}_{res_id}_{protonation}.pdb")
-                    shutil.copy(pdb_file, log_pdb)
-                
-                # Calculate system charge (use either variant, they should have the same charge)
-                system_charge = calculate_formal_charge(variants["HID"])
-                print(f"  Calculated system charge: {system_charge}")
                 
                 # Run xTB calculations
                 energies = {}
-                for protonation, pdb_file in variants.items():
-                    print(f"  Running xTB calculation for {protonation}...")
+                for tautomer, pdb_file in variants.items():
                     try:
-                        energies[protonation] = run_xtb_calculation(
-                            pdb_file, 
-                            his_dir, 
-                            protonation, 
-                            system_charge,
-                            xtbopt=xtbopt,
-                            solvent=solvent,
-                            log_dir=log_dir,
-                            mode=mode
+                        energies[tautomer] = run_xtb_calculation(
+                            pdb_file, temp_dir, tautomer,
+                            system_charge=calculate_formal_charge(pdb_file),
+                            log_dir=log_dir,xtbopt=args.xtbopt, solvent=args.solvent, mode=args.mode
                         )
                     except Exception as e:
-                        print(f"  ERROR running xTB for {protonation}: {str(e)}")
-                        energies[protonation] = None
-                
-                # If we have both energies, determine the optimal tautomer
-                if "HID" in energies and "HIE" in energies and energies["HID"] is not None and energies["HIE"] is not None:
-                    best_protonation = min(energies, key=energies.get)
-                    
-                    HARTREE_TO_KCAL = 627.509
-                    min_energy = energies[best_protonation]
-                    energy_diffs = {state: (energy - min_energy) * HARTREE_TO_KCAL 
-                                  for state, energy in energies.items()}
-                    
-                    alt_protonation = "HIE" if best_protonation == "HID" else "HID"
-                    result_entry = {
-                        "chain": chain_id,
-                        "residue": res_id,
-                        "optimal": best_protonation,
-                        "HID_Energy": energies.get("HID"),
-                        "HIE_Energy": energies.get("HIE"),
-                        "Energy_Diff_kcal": energy_diffs[alt_protonation],
-                        "System_Charge": system_charge
-                        }
-                    results.append(result_entry)
-                    
-                    print(f"  Optimal protonation: {best_protonation}, " 
-                          f"Energy difference: {energy_diffs[alt_protonation]:.2f} kcal/mol")
-                else:
-                    raise ValueError("Failed to calculate energies for both tautomers")
-                
-            except ValueError as e:
-                print(f"  WARNING: Skipping histidine {chain_id}:{res_id} - {str(e)}")
-                skipped_histidines.append((chain_id, res_id, str(e)))
-                continue
-            except Exception as e:
-                print(f"  ERROR processing histidine {chain_id}:{res_id}: {str(e)}")
-                skipped_histidines.append((chain_id, res_id, str(e)))
-                continue
-        
-        if results:
-            update_pdb_with_protonations(input_pdb, output_pdb, results)
-            
-            results_df = pd.DataFrame(results)
-            output_base = os.path.splitext(output_pdb)[0]
-            results_csv = f"{output_base}_protonations.csv"
-            results_df.to_csv(results_csv, index=False)
-            print(f"Protonation results saved to {results_csv}")
-            
-            report_file = f"{output_base}_protonations_report.txt"
-            
-            with open(report_file, 'w') as f:
-                f.write(f"Histidine Protonation Analysis Report\n")
-                f.write(f"===================================\n\n")
-                f.write(f"Input PDB: {input_pdb}\n")
-                f.write(f"Output PDB: {output_pdb}\n")
-                f.write(f"Environment cutoff: {cutoff} Å¦\n\n")
-                f.write(f"Summary: {len(results)} histidines analyzed\n\n")
-                
-                if skipped_histidines:
-                    f.write(f"WARNING: {len(skipped_histidines)} histidines skipped due to issues:\n")
-                    for chain, resid, reason in skipped_histidines:
-                        f.write(f"  - {chain}:{resid} - {reason}\n")
-                    f.write("\n")
-                
-                table_data = []
-                for r in results:
-                    table_data.append([
-                        f"{r['chain']}:{r['residue']}",
-                        r['optimal'],
-                        f"{r['Energy_Diff_kcal']:.2f}",
-                        r['System_Charge']
-                    ])
-                
-                f.write(tabulate(
-                    table_data, 
-                    headers=["Residue", "Optimal Tautomer", "Energy Difference (kcal/mol)", "System Charge"],
-                    tablefmt="grid",
-                    floatfmt=".2f",        # Consistent decimal places
-                    colalign=("left", "center", "right", "center")  # Better alignment
-                ))
-            
-            print(f"Detailed report saved to {report_file}")
-            
-            table_data = []
-            for r in results:
-                table_data.append([
-                    f"{r['chain']}:{r['residue']}", 
-                    r['optimal'], 
-                    f"{r['Energy_Diff_kcal']:.2f}",
-                    r['System_Charge'],
-                    ])
+                        print(f"  xTB error for {tautomer}: {str(e)}")
+                        energies[tautomer] = None
 
-            print("\nHistidine Protonation State Analysis Results:")
+                # Determine optimal protonation
+                if energies.get("HID") and energies.get("HIE"):
+                    optimal = min(energies, key=energies.get)
+                    energy_diff = abs(energies["HID"] - energies["HIE"]) * 627.509
+                    
+                    result_entry.update({
+                        "Optimal": optimal,
+                        "HID Energy (H)": f"{energies['HID']:.6f}",
+                        "HIE Energy (H)": f"{energies['HIE']:.6f}",
+                        "ΔE (kcal/mol)": f"{energy_diff:.2f}",
+                        "Note": "QM calculated",
+                        "Status": "Changed" if optimal != resname else "Unchanged"
+                    })
+                
+                results.append(result_entry)
+
+            except Exception as e:
+                print(f"  ERROR processing {chain}:{resid}: {str(e)}")
+                skipped_histidines.append((chain, resid, str(e)))
+                continue
+
+        # Generate final output
+        if results:
+            # Create results table
+            df = pd.DataFrame(results)
+            output_csv = f"{os.path.splitext(output_pdb)[0]}_results.csv"
+            df.to_csv(output_csv, index=False)
+            
             print("\nFinal Results:")
             print(tabulate(
-                table_data,
-                headers=["Residue", "Optimal Tautomer", "ΔE (kcal/mol)", "System Charge"],
+                df[["Position", "Original", "Optimal", "pKa", 
+                    "HID Energy (H)", "HIE Energy (H)", "ΔE (kcal/mol)", "Status", "Note"]],
+                headers=["Position", "Original", "Optimal", "pKa", 
+                         "HID Energy", "HIE Energy", "ΔE (kcal/mol)", "Status", "Notes"],
                 tablefmt="grid",
-                floatfmt=".2f",
-                showindex=False,
-                colalign=("left", "center", "right", "center")
+                showindex=False
             ))
-            print(f"\nSummary: {len(results)} histidines analyzed")
             
-            if skipped_histidines:
-                print(f"\nWARNING: {len(skipped_histidines)} histidines were skipped due to issues")
-                for chain, resid, reason in skipped_histidines:
-                    print(f"  - {chain}:{resid} - {reason}")
+            # Update PDB with all results (including PropKa assignments)
+            update_pdb_with_protonations(input_pdb, output_pdb, results)
+            
+        if skipped_histidines:
+            print("\nSkipped Histidines:")
+            for chain, resid, reason in skipped_histidines:
+                print(f"  {chain}:{resid} - {reason}")
 
-            print(f"\n{'='*40}")
-            print(f"Summary Statistics:")
-            print(f"{'='*40}")
-            print(f"Average energy difference: {results_df['Energy_Diff_kcal'].mean():.2f} kcal/mol")
-            print(f"Most stabilized tautomer: {results_df.loc[results_df['Energy_Diff_kcal'].idxmin(), 'chain']}:{results_df.loc[results_df['Energy_Diff_kcal'].idxmin(), 'residue']}")
-            print(f"{'='*40}")
-
-        else:
-            print("No histidines were successfully analyzed. Check error messages above.")
+    return True
 
 
 if __name__ == "__main__":
@@ -1525,8 +1478,11 @@ if __name__ == "__main__":
                         help='xtb Implicit Solvent (ALBP) ¦ (default: ether)')
     parser.add_argument("--mode", type=str, choices=['opt', 'SP'], default='opt',
                         help='xTB calculation mode: opt for geometry optimization (default), SP for single point')
+    parser.add_argument("--ph", type=float, default=7.4,
+                    help="Target pH for protonation state prediction (default: 7.4)")
+
 
     args = parser.parse_args()
-    qm_flipping_pipeline(args.input_pdb, args.output_pdb, args.cutoff, args.xtbopt, args.solvent, args.mode)
+    qm_flipping_pipeline(args.input_pdb, args.output_pdb, args)
 
 
