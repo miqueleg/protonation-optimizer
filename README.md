@@ -89,8 +89,7 @@ The tool generates several outputs:
 ## Limitations
 
 - Only handles the two neutral tautomers via QM (HID and HIE), not the protonated form (HIP). The latest is only determined via pKa calculation
-- Processes each histidine independently; for histidines in close proximity, results may not capture cooperative effects (not yet)
-- Requires proper installation and configuration of xTB and Open Babel
+- Processes each histidine independently; for histidines in close proximity, results may not capture cooperative effects (yet)
 
 ## Citing This Software
 
