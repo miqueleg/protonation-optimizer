@@ -87,7 +87,7 @@ def run_propka_predictions(pdb_file):
     pwd = os.getcwd()
     os.chdir('/'.join(pdb_file.split('/')[:-1]))
     result = subprocess.run(
-        ["propka3", pdb_file],
+        ["propka3", pdb_file, "-d"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True
