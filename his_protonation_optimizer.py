@@ -1139,7 +1139,8 @@ def calculate_formal_charge(pdb_file):
         'CL': -1,   # Chloride ion
         'MG': 2,    # Magnesium ion
         'CA': 2,    # Calcium ion
-        'K': 1      # Potassium ion
+        'K': 1,     # Potassium ion
+        'ZN': 2     # Zinc ion
     }
     
     # Count residues and their charges

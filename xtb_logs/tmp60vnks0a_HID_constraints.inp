@@ -1,0 +1,5 @@
+$fix
+    elements: C,N,S,O
+$opt
+    engine=lbfgs
+$end
