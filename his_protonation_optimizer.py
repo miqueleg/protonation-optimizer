@@ -87,7 +87,7 @@ def run_propka_predictions(pdb_file):
     pwd = os.getcwd()
     os.chdir('/'.join(pdb_file.split('/')[:-1]))
     result = subprocess.run(
-        ["propka3", pdb_file, "-d"],
+        ["propka3", pdb_file],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True
@@ -99,14 +99,14 @@ def run_propka_predictions(pdb_file):
         return {}
 
     pka_values = {}
-    with open(pdb_file.split('.')[0]+'.pka', 'r') as propkaout:
+    with open(pdb_file.split('/')[-1].split('.')[0]+'_alt_state.pka', 'r') as propkaout:
         for line in propkaout:
             if "HIS " in line[:5]:
                 splitted = line.split()
                 if len(splitted) > 15:
                     chain = splitted[2]
                     resid = int(splitted[1])
-                    pka = float(splitted[3])
+                    pka = float(splitted[3].replace('*',''))
                     pka_values[(chain, resid)] = pka
 
     os.chdir(pwd)
