@@ -85,7 +85,7 @@ def run_propka_predictions(pdb_file):
     """Run PropKa3 and return dictionary of histidine pKa values with proper parsing"""
     print("Running PropKa3 for pKa predictions...")
     pwd = os.getcwd()
-    os.chdir('/'.join(pdb_file.split('/')[:-1]))
+    os.chdir(os.path.dirname(os.path.abspath(pdb_file)))
     result = subprocess.run(
         ["propka3", pdb_file],
         stdout=subprocess.PIPE,
@@ -99,7 +99,7 @@ def run_propka_predictions(pdb_file):
         return {}
 
     pka_values = {}
-    with open(pdb_file.split('/')[-1].split('.')[0]+'_alt_state.pka', 'r') as propkaout:
+    with open(pdb_file.split('/')[-1].split('.')[0]+'.pka', 'r') as propkaout:
         for line in propkaout:
             if "HIS " in line[:5]:
                 splitted = line.split()
