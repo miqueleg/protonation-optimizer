@@ -1483,8 +1483,8 @@ if __name__ == "__main__":
                         help='xtb Implicit Solvent (ALBP) ¦ (default: ether)')
     parser.add_argument("--mode", type=str, choices=['opt', 'SP'], default='opt',
                         help='xTB calculation mode: opt for geometry optimization (default), SP for single point')
-    parser.add_argument("--ph", type=float, default=7.4,
-                    help="Target pH for protonation state prediction (default: 7.4)")
+    parser.add_argument("--ph", type=float, default=7.0,
+                    help="Target pH for protonation state prediction (default: 7.0)")
 
 
     args = parser.parse_args()
