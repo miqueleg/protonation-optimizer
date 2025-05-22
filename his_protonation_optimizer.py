@@ -82,7 +82,7 @@ def find_histidines(pdb_file):
     return histidines
 
 def run_propka_predictions(pdb_file):
-    """Run PropKa3 and return dictionary of histidine pKa values with proper parsing"""
+    """Run PropKa3 and return dictionary of ALL titratable residue pKa values with proper parsing"""
     print("Running PropKa3 for pKa predictions...")
     pwd = os.getcwd()
     os.chdir(os.path.dirname(os.path.abspath(pdb_file)))
@@ -99,18 +99,151 @@ def run_propka_predictions(pdb_file):
         return {}
 
     pka_values = {}
-    with open(pdb_file.split('/')[-1].split('.')[0]+'.pka', 'r') as propkaout:
-        for line in propkaout:
-            if "HIS " in line[:5]:
-                splitted = line.split()
-                if len(splitted) > 15:
-                    chain = splitted[2]
-                    resid = int(splitted[1])
-                    pka = float(splitted[3].replace('*',''))
-                    pka_values[(chain, resid)] = pka
-
+    try:
+        propka_out_file = pdb_file.split('/')[-1].split('.')[0]+'.pka'
+        with open(propka_out_file, 'r') as propkaout:
+            # Flag to track when we find the summary section
+            in_summary = False
+            header_skipped = False
+            
+            for line in propkaout:
+                line = line.strip()
+                
+                # Check if we've found the summary section
+                if "SUMMARY OF THIS PREDICTION" in line:
+                    in_summary = True
+                    continue
+                    
+                # Skip the header line that comes after "SUMMARY OF THIS PREDICTION"
+                if in_summary and not header_skipped:
+                    header_skipped = True
+                    continue
+                
+                # Process data lines in the summary section
+                if in_summary:
+                    # Check if we've reached the end of the summary section
+                    if not line or "------" in line or "Free energy" in line:
+                        break
+                        
+                    parts = line.split()
+                    
+                    # Ensure the line has the expected format and contains a titratable residue
+                    if len(parts) >= 4:
+                        resname = parts[0]
+                        
+                        # Only process known titratable residue types
+                        if resname in ["ASP", "GLU", "HIS", "CYS", "TYR", "LYS", "ARG"]:
+                            try:
+                                resid = int(parts[1])
+                                chain = parts[2]
+                                pka = float(parts[3].replace('*',''))  # Handle any asterisks in pKa values
+                                
+                                # Store in dictionary
+                                pka_values[(chain, resid)] = {
+                                    'residue': resname,
+                                    'pKa': pka
+                                }
+                            except (ValueError, IndexError) as e:
+                                print(f"Warning: Skipped malformed line: {line} - {e}")
+                                continue
+    except Exception as e:
+        print(f"Error parsing PropKa output: {e}")
+    
     os.chdir(pwd)
     return pka_values
+
+
+def determine_protonation_state(residue, pka, ph):
+    """Determine appropriate residue name based on pKa and pH"""
+    delta = pka - ph
+
+    if residue == "HIS":
+        if delta > 1.0:  # Strongly protonated
+            return "HIP"  # Doubly protonated
+        elif delta < -1.0:  # Strongly deprotonated
+            # Will be determined by QM in the original pipeline
+            return "HIS"
+        else:
+            # In the buffer zone, require QM verification
+            return "HIS"
+
+    elif residue == "ASP":
+        if delta > 1.0:  # Strongly protonated
+            return "ASH"  # Protonated form
+        else:
+            return "ASP"  # Deprotonated form
+
+    elif residue == "GLU":
+        if delta > 1.0:  # Strongly protonated
+            return "GLH"  # Protonated form
+        else:
+            return "GLU"  # Deprotonated form
+
+    elif residue == "LYS":
+        if delta < -1.0:  # Strongly deprotonated
+            return "LYN"  # Neutral form
+        else:
+            return "LYS"  # Protonated form
+
+    elif residue == "ARG":
+        if delta < -3.0:  # Very strongly deprotonated (rare)
+            return "ARN"  # Neutral form (rarely used)
+        else:
+            return "ARG"  # Protonated form
+
+    elif residue == "CYS":
+        if delta < -1.0:  # Strongly deprotonated
+            return "CYM"  # Negative form
+        else:
+            return "CYS"  # Neutral form
+
+    elif residue == "TYR":
+        if delta < -1.0:  # Strongly deprotonated
+            return "TYD"  # Negative form (or TYM in some force fields)
+        else:
+            return "TYR"  # Neutral form
+
+    # Default: return original name
+    return residue
+
+def update_pdb_with_protonations(input_pdb, output_pdb, protonation_map):
+    """Update PDB with optimal protonation states for all titratable residue types"""
+    print(f"Updating PDB file with optimized protonation states: {output_pdb}")
+    
+    # Define standard residues and their protonation variants
+    standard_to_variant = {
+        "ASP": ["ASP", "ASH"],
+        "GLU": ["GLU", "GLH"],
+        "HIS": ["HIS", "HID", "HIE", "HIP"],
+        "LYS": ["LYS", "LYN"],
+        "ARG": ["ARG", "ARN"],
+        "CYS": ["CYS", "CYM"],
+        "TYR": ["TYR", "TYD", "TYM"]
+    }
+    
+    # Create reverse mapping to identify titratable residues
+    titratable_variants = {}
+    for std, variants in standard_to_variant.items():
+        for var in variants:
+            titratable_variants[var] = std
+    
+    with open(input_pdb, 'r') as f_in, open(output_pdb, 'w') as f_out:
+        for line in f_in:
+            if line.startswith('ATOM') or line.startswith('HETATM'):
+                resname = line[17:20].strip()
+                
+                # Check if this is a titratable residue type
+                if resname in titratable_variants:
+                    chain_id = line[21]
+                    residue_num = int(line[22:26].strip())
+                    key = (chain_id, residue_num)
+                    
+                    # If we have a new protonation state for this residue
+                    if key in protonation_map:
+                        new_resname = protonation_map[key]
+                        line = line[:17] + new_resname.ljust(3) + line[20:]
+                        
+            f_out.write(line)
 
 
 def extract_environment(input_pdb, histidine, cutoff):
@@ -1309,40 +1442,55 @@ def create_no_hydrogens_pdb(input_pdb, output_pdb):
                     continue
             f_out.write(line)
 
-def update_pdb_with_protonations(input_pdb, output_pdb, results):
-    """Update PDB with optimal protonation states"""
-    opt_protonations = {
-        (res["chain"], res["residue"]): res["Optimal"]  # Now using correct keys
-        for res in results
-    }
-    
-    with open(input_pdb, 'r') as f_in, open(output_pdb, 'w') as f_out:
-        for line in f_in:
-            if line.startswith('ATOM') and line[17:20].strip() in ["HIS", "HID", "HIE"]:
-                chain_id = line[21]
-                residue_num = int(line[22:26].strip())
-                key = (chain_id, residue_num)
-                
-                if key in opt_protonations:
-                    line = line[:17] + opt_protonations[key].ljust(3) + line[20:]
-            f_out.write(line)
- 
 def qm_flipping_pipeline(input_pdb, output_pdb, args):
-    """Main pipeline function with PropKa3 integration and proper table handling"""
+    """Main pipeline function with expanded PropKa3 integration for all titratable residues"""
     # Create log directory
     log_dir = "xtb_logs"
     os.makedirs(log_dir, exist_ok=True)
     print(f"xTB logs will be saved to: {os.path.abspath(log_dir)}")
-    
-    # Run PropKa3 predictions
+        
+    # Run PropKa3 predictions for all titratable residues
     pka_values = run_propka_predictions(input_pdb)
-    print(pka_values)    
+    print(f"PropKa3 found {len(pka_values)} titratable residues")
+    print(f"  - ASP/GLU: {sum(1 for (_, info) in pka_values.items() if info['residue'] in ['ASP', 'GLU'])}")
+    print(f"  - HIS: {sum(1 for (_, info) in pka_values.items() if info['residue'] == 'HIS')}")
+    print(f"  - LYS/ARG: {sum(1 for (_, info) in pka_values.items() if info['residue'] in ['LYS', 'ARG'])}")
+    print(f"  - Other: {sum(1 for (_, info) in pka_values.items() if info['residue'] not in ['ASP', 'GLU', 'HIS', 'LYS', 'ARG'])}")
+    
+    # Process protonation states
+    protonation_map = {}
+    histidine_results = []
+    
+    for (chain, resid), info in pka_values.items():
+        residue = info['residue']
+        pka = info['pKa']
+        
+        # Determine appropriate protonation state based on pKa
+        new_resname = determine_protonation_state(residue, pka, args.ph)
+        
+        if residue == "HIS":
+            # For histidines, we need to handle them specially with QM
+            # Store for later processing
+            histidine_results.append({
+                "chain": chain,
+                "residue": resid,
+                "Position": f"{chain}:{resid}",
+                "Original": residue,
+                "pKa": pka,
+                "Status": "Pending QM"
+            })
+        else:
+            # For other residues, directly apply the protonation state
+            if new_resname != residue:
+                protonation_map[(chain, resid)] = new_resname
+                print(f"Setting {residue} {chain}:{resid} to {new_resname} (pKa: {pka:.2f}, pH: {args.ph})")
+
+    # Continue with histidine processing per the original pipeline 
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Process entire structure with OpenBabel
+        # Original processing steps for OpenBabel and charged residues
         obabel_pdb = os.path.join(temp_dir, "obabel_processed.pdb")
         process_with_obabel(input_pdb, obabel_pdb)
         
-        # Identify and fix charged residues
         charged_residues = identify_charged_residues(input_pdb)
         corrected_pdb = os.path.join(temp_dir, "corrected.pdb")
         fix_charged_residues(obabel_pdb, corrected_pdb, charged_residues)
@@ -1359,26 +1507,29 @@ def qm_flipping_pipeline(input_pdb, output_pdb, args):
             resid = his["resid"]
             resname = his["resname"]
             
-            # Initialize result entry with all possible fields
+            # Find corresponding entry in histidine_results
+            his_result = next((r for r in histidine_results if r["chain"] == chain and r["residue"] == resid), None)
+            
+            # Initialize result entry
             result_entry = {
                 "chain": chain,
                 "residue": resid,
                 "Position": f"{chain}:{resid}",
                 "Original": resname,
                 "Optimal": resname,
-                "pKa": pka_values.get((chain, resid), "N/A"),
+                "pKa": his_result["pKa"] if his_result else "N/A",
                 "HID Energy (H)": "N/A",
                 "HIE Energy (H)": "N/A",
                 "ΔE (kcal/mol)": "N/A",
                 "Note": "No calculation",
                 "Status": "Unchanged"
             }
+            
             ph = args.ph
             try:
                 # Check PropKa predictions
-                his_pka = pka_values.get((chain, resid))
-                if his_pka:
-                    result_entry["pKa"] = his_pka
+                if his_result:
+                    his_pka = his_result["pKa"]
                     
                     # Automatic protonation state assignment
                     if his_pka > ph + 1.0:
@@ -1387,24 +1538,21 @@ def qm_flipping_pipeline(input_pdb, output_pdb, args):
                             "Note": f"Auto-assigned HIP ({his_pka:.1f} > {ph}+1)",
                             "Status": "PropKa assigned"
                         })
+                        protonation_map[(chain, resid)] = "HIP"  # Add to global map
                         results.append(result_entry)
                         continue
-                    elif his_pka < ph - 1.0:
-                        result_entry["Note"] = f"Auto-deprotonated (pKa {his_pka:.1f} < pH-1)"
-                    else:
-                        result_entry["Note"] = f"Buffer zone (pKa {his_pka:.1f}) - QM verification needed"
+                    # Continue with the original flow for other cases
 
-                # QM processing for non-automatic cases
+                # Original QM processing code continues here
                 env_traj, target_res = extract_environment(corrected_pdb, his, args.cutoff)
                 env_pdb = os.path.join(temp_dir, f"{chain}_{resid}_env.pdb")
                 env_traj.save(env_pdb)
 
-                # Create tautomer variants
+                # Create and verify tautomer variants as in original code
                 variants = create_tautomer_variants(env_pdb, temp_dir)
                 if not variants:
                     raise ValueError("Failed to create tautomer variants")
-
-                # Verify tautomers
+                
                 verify_results = verify_tautomers(variants)
                 
                 # Run xTB calculations
@@ -1414,7 +1562,7 @@ def qm_flipping_pipeline(input_pdb, output_pdb, args):
                         energies[tautomer] = run_xtb_calculation(
                             pdb_file, temp_dir, tautomer,
                             system_charge=calculate_formal_charge(pdb_file),
-                            log_dir=log_dir,xtbopt=args.xtbopt, solvent=args.solvent, mode=args.mode
+                            log_dir=log_dir, xtbopt=args.xtbopt, solvent=args.solvent, mode=args.mode
                         )
                     except Exception as e:
                         print(f"  xTB error for {tautomer}: {str(e)}")
@@ -1433,6 +1581,9 @@ def qm_flipping_pipeline(input_pdb, output_pdb, args):
                         "Note": "QM calculated",
                         "Status": "Changed" if optimal != resname else "Unchanged"
                     })
+                    
+                    # Add to global protonation map
+                    protonation_map[(chain, resid)] = optimal
                 
                 results.append(result_entry)
 
@@ -1443,12 +1594,12 @@ def qm_flipping_pipeline(input_pdb, output_pdb, args):
 
         # Generate final output
         if results:
-            # Create results table
+            # Create histidine results table
             df = pd.DataFrame(results)
             output_csv = f"{os.path.splitext(output_pdb)[0]}_results.csv"
             df.to_csv(output_csv, index=False)
             
-            print("\nFinal Results:")
+            print("\nHistidine Results:")
             print(tabulate(
                 df[["Position", "Original", "Optimal", "pKa", 
                     "HID Energy (H)", "HIE Energy (H)", "ΔE (kcal/mol)", "Status", "Note"]],
@@ -1457,10 +1608,35 @@ def qm_flipping_pipeline(input_pdb, output_pdb, args):
                 tablefmt="grid",
                 showindex=False
             ))
+        
+        # Print summary of non-histidine protonation changes
+        non_his_changes = []
+        for (chain, resid), new_name in protonation_map.items():
+            # Skip histidines that were already reported
+            if next((r for r in results if r["chain"] == chain and r["residue"] == resid), None):
+                continue
+                
+            # Get original residue name
+            orig_res = next((info['residue'] for (c, r), info in pka_values.items() 
+                           if c == chain and r == resid), "Unknown")
+            pka = next((info['pKa'] for (c, r), info in pka_values.items() 
+                       if c == chain and r == resid), None)
             
-            # Update PDB with all results (including PropKa assignments)
-            update_pdb_with_protonations(input_pdb, output_pdb, results)
+            non_his_changes.append({
+                "Position": f"{chain}:{resid}",
+                "Original": orig_res,
+                "New": new_name,
+                "pKa": pka if pka else "N/A",
+                "pH": args.ph
+            })
             
+        if non_his_changes:
+            print("\nNon-Histidine Protonation Changes:")
+            print(tabulate(non_his_changes, headers="keys", tablefmt="grid", showindex=False))
+        
+        # Update PDB with all protonation states
+        update_pdb_with_protonations(input_pdb, output_pdb, protonation_map)
+        
         if skipped_histidines:
             print("\nSkipped Histidines:")
             for chain, resid, reason in skipped_histidines:
