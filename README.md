@@ -1,6 +1,6 @@
-# Histidine Protonation State Optimizer
+# Protonation State Optimizer
 
-A quantum mechanics-based tool for determining optimal histidine protonation states in protein structures for molecular dynamics simulations.
+A quantum mechanics-based tool for determining optimal aminoacidic protonation states (focusing on Histidines) in protein structures for molecular dynamics simulations.
 
 ## Description
 
@@ -41,49 +41,48 @@ This tool is particularly useful for preparing protein structures for molecular 
    
 5. Clone this repository:
 ```
-git clone https://github.com/miqueleg/histidine-protonation-optimizer
-cd histidine-protonation-optimizer
+git clone https://github.com/miqueleg/protonation-optimizer
 ```
 
 ## Usage
 
 Basic usage:
 ```
-python his_protonation_optimizer.py input.pdb output.pdb
+python protonation_optimizer.py input.pdb output.pdb
 ```
 With custom environment cutoff (default is 5.0 Å):
 ```
-python his_protonation_optimizer.py input.pdb output.pdb --cutoff 6.0
+python protonation_optimizer.py input.pdb output.pdb --cutoff 6.0
 ```
 Changing Optimization level and Solvent (default loose and ether) :
 ```
-python his_protonation_optimizer.py input.pdb output.pdb --xtbopt crude --solvent water
+python protonation_optimizer.py input.pdb output.pdb --xtbopt crude --solvent water
 ```
 Using Single Point calculations instead of Optimization [Faster but less precise] (default opt) :
 ```
-python his_protonation_optimizer.py input.pdb output.pdb --mode SP
+python protonation_optimizer.py input.pdb output.pdb --mode SP
 ```
 
 This will:
+0. Run PropKa3 and determine initial protonations
 1. Find all histidine residues in `protein.pdb`
 2. For each histidine, extract a 5.0 Å environment
 3. Create both HID and HIE tautomers with proper hydrogen placement
 4. Run xTB optimization or single point calculations on each tautomer
 5. Determine the optimal protonation state based on energy
-6. Save the result to `output.pdb` and `output_noH.pdb` (`output_noH.pdb` can be used directly for Leap or PDBfixer)
-7. Generate a detailed report of the analysis
+6. Generate a detailed report table of the analysis
 
 ## Output Files
 
 The tool generates several outputs:
-- An optimized PDB file with the correct histidine protonation states
+- An optimized PDB file with the computed protonation states of the AminoAcids in your protein
 - A CSV file with energy results for each histidine
 - A detailed text report of the analysis
 - xTB log files for each calculation in an `xtb_logs` directory
 
 ## Special Features
 
-- **Charged Residue Handling**: It handles ASP, GLU, LYS, and ARG by preserving their charged states
+- **Charged Residue Handling**: It handles ASP, GLU, LYS, and ARG by pKa/pH comparison using PropKa3
 - **Constraint-based Optimization**: Allows hydrogen atoms to relax during energy calculations while keeping heavy atoms fixed
 
 ## Limitations
@@ -95,8 +94,8 @@ The tool generates several outputs:
 
 If you use this tool in your research, please cite it as:
 ```
-Estévez-Gay, M. (2025). Histidine Protonation State Optimizer.
-GitHub repository: https://github.com/miqueleg/histidine-protonation-optimizer
+Estévez-Gay, M. (2025). Protonation State Optimizer.
+GitHub repository: https://github.com/miqueleg/protonation-optimizer
 ```
 
 
