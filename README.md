@@ -27,7 +27,7 @@ This tool is particularly useful for preparing protein structures for molecular 
 ### External Software
 - Open Babel (for hydrogen placement)
 - xTB (for quantum mechanical calculations)
-- g-xtb (optional, for GPU-accelerated single point calculations only)
+- g-xtb (optional, single point calculations only)
 - PropKa3
 
 ## Installation
@@ -36,11 +36,12 @@ This tool is particularly useful for preparing protein structures for molecular 
 
 2. Install Open Babel:
 
-3. Install xTB:
+3. Install xTB
+3.2. Install g-xtb if interested on using g-xtb on SP calculations 
 
-4. Install PropKa3
+5. Install PropKa3
    
-5. Clone this repository:
+6. Clone this repository:
 ```
 git clone https://github.com/miqueleg/protonation-optimizer
 ```
@@ -68,14 +69,14 @@ Using g-xtb engine for single point calculations (SP only):
 ```
 python protonation_optimizer.py input.pdb output.pdb --engine g-xtb --mode SP
 ```
-Note: g-xtb is supported only for SP calculations. Optimization with g-xtb is not available because gradients are not provided for fast optimization.
+Note: g-xtb is supported only for SP calculations. Optimization with g-xtb is not available because gradient calculations are numerical (slow) in version 1.1 of g-xtb.
 
 This will:
 0. Run PropKa3 and determine initial protonations
 1. Find all histidine residues in `protein.pdb`
 2. For each histidine, extract a 5.0 Å environment
 3. Create both HID and HIE tautomers with proper hydrogen placement
-4. Run xTB/g-xtb optimization or single point calculations on each tautomer
+4. Run xTB optimization or xTB/g-xtb single point calculations on each tautomer
 5. Determine the optimal protonation state based on energy
 6. Generate a detailed report table of the analysis
 
