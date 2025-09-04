@@ -27,6 +27,7 @@ This tool is particularly useful for preparing protein structures for molecular 
 ### External Software
 - Open Babel (for hydrogen placement)
 - xTB (for quantum mechanical calculations)
+- g-xtb (optional, for GPU-accelerated single point calculations only)
 - PropKa3
 
 ## Installation
@@ -63,12 +64,18 @@ Using Single Point calculations instead of Optimization [Faster but less precise
 python protonation_optimizer.py input.pdb output.pdb --mode SP
 ```
 
+Using g-xtb engine for single point calculations (SP only):
+```
+python protonation_optimizer.py input.pdb output.pdb --engine g-xtb --mode SP
+```
+Note: g-xtb is supported only for SP calculations. Optimization with g-xtb is not available because gradients are not provided for fast optimization.
+
 This will:
 0. Run PropKa3 and determine initial protonations
 1. Find all histidine residues in `protein.pdb`
 2. For each histidine, extract a 5.0 Å environment
 3. Create both HID and HIE tautomers with proper hydrogen placement
-4. Run xTB optimization or single point calculations on each tautomer
+4. Run xTB/g-xtb optimization or single point calculations on each tautomer
 5. Determine the optimal protonation state based on energy
 6. Generate a detailed report table of the analysis
 
@@ -78,7 +85,7 @@ The tool generates several outputs:
 - An optimized PDB file with the computed protonation states of the AminoAcids in your protein
 - A CSV file with energy results for each histidine
 - A detailed text report of the analysis
-- xTB log files for each calculation in an `xtb_logs` directory
+- xTB/g-xtb log files for each calculation in an `xtb_logs` directory
 
 ## Special Features
 
@@ -89,6 +96,7 @@ The tool generates several outputs:
 
 - Only handles the two neutral tautomers via QM (HID and HIE), not the protonated form (HIP). The latest is only determined via pKa calculation
 - Processes each histidine independently; for histidines in close proximity, results may not capture cooperative effects (yet)
+- When using `--engine g-xtb`, you must also set `--mode SP`. Geometry optimizations are not supported with g-xtb in this tool.
 
 ## Citing This Software
 
@@ -106,5 +114,4 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request
-
 

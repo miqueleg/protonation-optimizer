@@ -6,6 +6,7 @@ Includes special handling for truncated residues and charge correction for ASP, 
 """
 
 import os
+import sys
 import tempfile
 import subprocess
 import pandas as pd
@@ -17,6 +18,13 @@ from tabulate import tabulate
 import re
 import shutil
 import datetime
+
+# Ensure we are running on Python 3.7+ (f-strings and features used below)
+if sys.version_info < (3, 7):
+    raise SystemExit(
+        "This script requires Python 3.7+; run with 'python3' or upgrade your environment. "
+        f"Detected Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}."
+    )
 
 
 def normalize(vector):
@@ -86,16 +94,23 @@ def run_propka_predictions(pdb_file):
     print("Running PropKa3 for pKa predictions...")
     pwd = os.getcwd()
     os.chdir(os.path.dirname(os.path.abspath(pdb_file)))
-    result = subprocess.run(
-        ["propka3", pdb_file],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
-    )
+    try:
+        # Try the standard entry point first
+        result = subprocess.run(
+            ["propka3", pdb_file],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+    except FileNotFoundError:
+        print("PropKa3 not found in PATH; skipping pKa predictions.")
+        os.chdir(pwd)
+        return {}
     
     # Check for errors
     if result.returncode != 0:
         print(f"PropKa3 Error: {result.stderr}")
+        os.chdir(pwd)
         return {}
 
     pka_values = {}
@@ -358,14 +373,28 @@ def process_with_obabel(input_pdb, output_pdb):
     # First remove all hydrogens
     no_h_pdb = os.path.join(os.path.dirname(output_pdb), "noh_temp.pdb")
     cmd1 = ["obabel", input_pdb, "-O", no_h_pdb, "-d"]
-    subprocess.run(cmd1, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        r1 = subprocess.run(cmd1, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        r1 = None
+    if not os.path.exists(no_h_pdb):
+        print("  Warning: Open Babel hydrogen removal failed; proceeding with original file.")
+        shutil.copy(input_pdb, output_pdb)
+        return os.path.exists(output_pdb)
     
     # Then add them back with proper valence
     cmd2 = ["obabel", no_h_pdb, "-O", output_pdb, "-h"]
-    subprocess.run(cmd2, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        r2 = subprocess.run(cmd2, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        r2 = None
+    if not os.path.exists(output_pdb):
+        print("  Warning: Open Babel hydrogen addition failed; proceeding with previous file.")
+        shutil.copy(no_h_pdb, output_pdb) if os.path.exists(no_h_pdb) else shutil.copy(input_pdb, output_pdb)
     
     # Clean up temporary file
-    os.remove(no_h_pdb)
+    if os.path.exists(no_h_pdb):
+        os.remove(no_h_pdb)
     
     return os.path.exists(output_pdb)
 
@@ -1337,7 +1366,7 @@ def create_constraints_file(pdb_file, constraints_file):
     return
 
 
-def run_xtb_calculation(pdb_file, temp_dir, protonation, system_charge=None, xtbopt='loose', solvent='ether', log_dir="xtb_logs", mode='opt'):
+def run_xtb_calculation(pdb_file, temp_dir, protonation, system_charge=None, xtbopt='loose', solvent='ether', log_dir="xtb_logs", mode='opt', engine='xtb'):
     """
     Run xTB calculation with fixed heavy atoms, ether solvent, and proper logging
     mode: 'opt' for optimization (default), 'SP' for single point calculation
@@ -1357,17 +1386,27 @@ def run_xtb_calculation(pdb_file, temp_dir, protonation, system_charge=None, xtb
     xtb_error = f"{log_file_base}.err"
     
     xyz_file = os.path.join(calc_dir, "input.xyz")
-    result = subprocess.run(
-        ["obabel", pdb_file, "-O", xyz_file], 
-        stdout=subprocess.PIPE, 
-        stderr=subprocess.PIPE,
-        text=True
-    )
-    
+    obabel_err = ""
+    try:
+        result = subprocess.run(
+            ["obabel", pdb_file, "-O", xyz_file], 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        obabel_err = result.stderr or ""
+    except FileNotFoundError:
+        obabel_err = "obabel not found in PATH"
+
     if not os.path.exists(xyz_file):
-        with open(xtb_error, 'w') as f:
-            f.write(f"Failed to convert PDB to XYZ: {result.stderr}")
-        raise RuntimeError(f"Failed to convert PDB to XYZ: {result.stderr}")
+        # Fallback: write a minimal XYZ directly from the PDB
+        try:
+            _pdb_to_xyz(pdb_file, xyz_file)
+        except Exception as e:
+            with open(xtb_error, 'w') as f:
+                f.write(f"Failed to convert PDB to XYZ via obabel. {obabel_err}\n")
+                f.write(f"Fallback PDB->XYZ conversion also failed: {e}\n")
+            raise RuntimeError("Failed to convert PDB to XYZ:")
     
     # Determine total system charge if not specified
     if system_charge is None:
@@ -1382,44 +1421,65 @@ def run_xtb_calculation(pdb_file, temp_dir, protonation, system_charge=None, xtb
     # Save constraints file to logs
     shutil.copy(constraints_file, f"{log_file_base}_constraints.inp")
     
-    # Display calculation mode
-    print(f"    Running xTB ({mode} mode) with output to {xtb_log}")
+    # Enforce engine/mode compatibility and build command
+    if engine not in ["xtb", "g-xtb"]:
+        raise ValueError(f"Unsupported engine '{engine}'. Choose 'xtb' or 'g-xtb'.")
+
+    if engine == "g-xtb" and mode != 'SP':
+        raise ValueError("g-xtb engine is only supported for single point (SP) calculations. Use --mode SP.")
+
+    print(f"    Running {engine} ({mode} mode) with output to {xtb_log}")
+
+    if engine == "xtb":
+        # Build command for xtb
+        cmd = [
+            "xtb", xyz_file,
+            "--alpb", solvent,
+            "--chrg", str(system_charge),
+            "--input", constraints_file,
+            "--gfn", "2",
+        ]
+        # Add optimization only for 'opt' mode
+        if mode == 'opt':
+            cmd.extend(["--opt", xtbopt])
+    else:
+        # g-xtb usage: gxtb -c <xyz_file> with optional control files (e.g., .CHRG) in cwd
+        # Provide charge via .CHRG in the working directory
+        chrg_path = os.path.join(calc_dir, ".CHRG")
+        try:
+            with open(chrg_path, 'w') as cf:
+                cf.write(f"{int(system_charge)}\n")
+        except Exception as e:
+            with open(xtb_error, 'a') as errf:
+                errf.write(f"Failed to write .CHRG file: {e}\n")
+
+        # Build command: coordinate file via -c
+        cmd = ["gxtb", "-c", xyz_file]
     
-    # Build command based on mode
-    cmd = [
-        "xtb", xyz_file,
-        "--alpb", solvent,
-        "--chrg", str(system_charge),
-        "--input", constraints_file,
-        "--gfn", "2",
-    ]
-    
-    # Add optimization flag only for 'opt' mode
-    if mode == 'opt':
-        cmd.extend(["--opt", xtbopt])
-    
-    # Run xTB with conditional optimization
+    # Run xTB/g-xtb with conditional optimization
     with open(xtb_log, 'w') as log, open(xtb_error, 'w') as err:
+        # Log the exact command for reproducibility
+        print(f"    Command: {' '.join(cmd)}")
         result = subprocess.run(cmd, stdout=log, stderr=err, text=True, cwd=calc_dir)
     
-    # Extract energy from output
-    energy = None
-    with open(xtb_log, "r") as f:
-        for line in f:
-            if "TOTAL ENERGY" in line:
-                numbers = re.findall(r"-?\d+\.\d+", line)
-                if numbers:
-                    energy = float(numbers[0])
-                    break
-    
-    if energy is None:
-        with open(xtb_log, "r") as f:
-            for line in f:
-                if "total E" in line:
-                    numbers = re.findall(r"-?\d+\.\d+", line)
-                    if numbers:
-                        energy = float(numbers[0])
-                        break
+    # Extract energy from output (handles xtb and g-xtb variants)
+    energy = _parse_energy_from_log(xtb_log)
+    if energy is None and engine == "g-xtb":
+        # Some g-xtb builds write to files in the working directory, not stdout
+        alt_logs = [
+            os.path.join(calc_dir, name) for name in (
+                "gxtb.out", "g-xtb.out", "gxtb.log", "g-xtb.log", "xtb.out"
+            ) if os.path.exists(os.path.join(calc_dir, name))
+        ]
+        for path in alt_logs:
+            energy = _parse_energy_from_log(path)
+            if energy is not None:
+                # Copy the found log to the central logs dir for convenience
+                try:
+                    shutil.copy(path, f"{log_file_base}_detected.out")
+                except Exception:
+                    pass
+                break
     
     if energy is None:
         print(f"    ERROR: Could not extract energy from xTB output. See {xtb_log} and {xtb_error} for details.")
@@ -1427,6 +1487,84 @@ def run_xtb_calculation(pdb_file, temp_dir, protonation, system_charge=None, xtb
     
     print(f"    {protonation} energy: {energy} Hartree")
     return energy
+
+def _parse_energy_from_log(log_path):
+    energy = None
+    patterns = [
+        re.compile(r"TOTAL\s+ENERGY\s+(-?\d+\.\d+)", re.IGNORECASE),
+        re.compile(r"total\s+E\s*=\s*(-?\d+\.\d+)", re.IGNORECASE),
+        re.compile(r"Total\s+energy[:\s]+(-?\d+\.\d+)", re.IGNORECASE),
+        re.compile(r"Etot\s*=\s*(-?\d+\.\d+)", re.IGNORECASE),
+        re.compile(r"FINAL\s+SINGLE\s+POINT\s+ENERGY\s+(-?\d+\.\d+)", re.IGNORECASE),
+        re.compile(r"E\s*\(total\)\s*=\s*(-?\d+\.\d+)", re.IGNORECASE),
+    ]
+    # Additional pattern for g-xtb 1.1.0 summary: 'total   -6806.20592380' at end of file
+    total_line_pattern = re.compile(r"^\s*total\s+(-?\d+\.\d+)\s*$", re.IGNORECASE)
+    last_total = None
+    try:
+        with open(log_path, 'r') as f:
+            for line in f:
+                # Try immediate patterns
+                for pat in patterns:
+                    m = pat.search(line)
+                    if m:
+                        try:
+                            return float(m.group(1))
+                        except Exception:
+                            pass
+                # Track last 'total <number>' occurrence
+                m2 = total_line_pattern.match(line)
+                if m2:
+                    try:
+                        last_total = float(m2.group(1))
+                    except Exception:
+                        pass
+    except FileNotFoundError:
+        return None
+    # Prefer the last seen 'total' if nothing else matched
+    if last_total is not None:
+        return last_total
+    return None
+
+def _infer_element(atom_name, line):
+    # Prefer PDB element column (77-78)
+    if len(line) >= 78:
+        elem = line[76:78].strip()
+        if elem:
+            return elem
+    # Fallback: derive from atom name
+    an = atom_name.strip()
+    # Common case: first character is the element (e.g., C, N, O, S, H)
+    if not an:
+        return 'X'
+    e = an[0].upper()
+    # Handle two-letter halogens/metals if present at start (rare in protein)
+    if len(an) >= 2 and an[1].islower():
+        cand = (an[0] + an[1]).capitalize()
+        if cand in {"Cl", "Br", "Na", "Mg", "Al", "Si", "Ca", "Fe", "Zn", "Cu", "Mn", "Co", "Ni"}:
+            return cand
+    return e
+
+def _pdb_to_xyz(pdb_file, xyz_file):
+    atoms = []
+    with open(pdb_file, 'r') as f:
+        for line in f:
+            if not line.startswith(('ATOM', 'HETATM')):
+                continue
+            atom_name = line[12:16]
+            x = float(line[30:38])
+            y = float(line[38:46])
+            z = float(line[46:54])
+            elem = _infer_element(atom_name, line)
+            atoms.append((elem, x, y, z))
+    if not atoms:
+        raise ValueError("No atoms parsed from PDB for XYZ conversion")
+    os.makedirs(os.path.dirname(xyz_file), exist_ok=True)
+    with open(xyz_file, 'w') as xf:
+        xf.write(f"{len(atoms)}\n")
+        xf.write("generated from PDB\n")
+        for elem, x, y, z in atoms:
+            xf.write(f"{elem} {x:.6f} {y:.6f} {z:.6f}\n")
 
 def create_no_hydrogens_pdb(input_pdb, output_pdb):
     """Create a PDB file without hydrogens but with correct histidine names"""
@@ -1562,7 +1700,7 @@ def qm_flipping_pipeline(input_pdb, output_pdb, args):
                         energies[tautomer] = run_xtb_calculation(
                             pdb_file, temp_dir, tautomer,
                             system_charge=calculate_formal_charge(pdb_file),
-                            log_dir=log_dir, xtbopt=args.xtbopt, solvent=args.solvent, mode=args.mode
+                            log_dir=log_dir, xtbopt=args.xtbopt, solvent=args.solvent, mode=args.mode, engine=args.engine
                         )
                     except Exception as e:
                         print(f"  xTB error for {tautomer}: {str(e)}")
@@ -1647,7 +1785,7 @@ def qm_flipping_pipeline(input_pdb, output_pdb, args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Optimize histidine protonation states (HID/HIE) using Open Babel for hydrogen placement and xTB for energy calculations"
+        description="Optimize histidine protonation states (HID/HIE) using Open Babel for hydrogen placement and xTB/g-xtb for energy calculations"
     )
     parser.add_argument("input_pdb", help="Input PDB file")
     parser.add_argument("output_pdb", help="Output PDB with optimized protonations")
@@ -1658,12 +1796,15 @@ if __name__ == "__main__":
     parser.add_argument("--solvent", type=str, default='ether',
                         help='xtb Implicit Solvent (ALBP) ¦ (default: ether)')
     parser.add_argument("--mode", type=str, choices=['opt', 'SP'], default='opt',
-                        help='xTB calculation mode: opt for geometry optimization (default), SP for single point')
+                        help='Calculation mode: opt for geometry optimization (default), SP for single point')
+    parser.add_argument("--engine", type=str, choices=['xtb', 'g-xtb'], default='xtb',
+                        help='Quantum engine: xtb (default) or g-xtb (SP only)')
     parser.add_argument("--ph", type=float, default=7.0,
                     help="Target pH for protonation state prediction (default: 7.0)")
 
 
     args = parser.parse_args()
+    # Early validation: g-xtb is SP-only
+    if args.engine == 'g-xtb' and args.mode != 'SP':
+        raise SystemExit("Error: g-xtb engine supports only single point mode. Use '--mode SP' or switch to '--engine xtb'.")
     qm_flipping_pipeline(args.input_pdb, args.output_pdb, args)
-
-
