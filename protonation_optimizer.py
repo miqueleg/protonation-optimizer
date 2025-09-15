@@ -221,10 +221,13 @@ def determine_protonation_state(residue, pka, ph):
     # Default: return original name
     return residue
 
-def update_pdb_with_protonations(input_pdb, output_pdb, protonation_map):
-    """Update PDB with optimal protonation states for all titratable residue types"""
+def update_pdb_with_protonations(input_pdb, output_pdb, protonation_map, hydrogen_map=None):
+    """Update PDB with optimized residue names and histidine hydrogen positions"""
     print(f"Updating PDB file with optimized protonation states: {output_pdb}")
-    
+
+    if hydrogen_map is None:
+        hydrogen_map = {}
+
     # Define standard residues and their protonation variants
     standard_to_variant = {
         "ASP": ["ASP", "ASH"],
@@ -235,30 +238,56 @@ def update_pdb_with_protonations(input_pdb, output_pdb, protonation_map):
         "CYS": ["CYS", "CYM"],
         "TYR": ["TYR", "TYD", "TYM"]
     }
-    
+
     # Create reverse mapping to identify titratable residues
     titratable_variants = {}
     for std, variants in standard_to_variant.items():
         for var in variants:
             titratable_variants[var] = std
-    
+
     with open(input_pdb, 'r') as f_in, open(output_pdb, 'w') as f_out:
+        current_key = None
+        atom_serial = 1
+
+        def write_hydrogens(key):
+            nonlocal atom_serial
+            for h_line in hydrogen_map.get(key, []):
+                new_resname = protonation_map.get(key, h_line[17:20].strip())
+                line = h_line[:6] + f"{atom_serial:5d}" + h_line[11:17] + new_resname.ljust(3) + h_line[20:]
+                f_out.write(line)
+                atom_serial += 1
+
         for line in f_in:
-            if line.startswith('ATOM') or line.startswith('HETATM'):
+            if line.startswith(('ATOM', 'HETATM')):
+                chain_id = line[21]
+                residue_num = int(line[22:26].strip())
+                key = (chain_id, residue_num)
+
+                if key != current_key:
+                    if current_key is not None:
+                        write_hydrogens(current_key)
+                    current_key = key
+
                 resname = line[17:20].strip()
-                
-                # Check if this is a titratable residue type
-                if resname in titratable_variants:
-                    chain_id = line[21]
-                    residue_num = int(line[22:26].strip())
-                    key = (chain_id, residue_num)
-                    
-                    # If we have a new protonation state for this residue
-                    if key in protonation_map:
-                        new_resname = protonation_map[key]
-                        line = line[:17] + new_resname.ljust(3) + line[20:]
-                        
-            f_out.write(line)
+                new_resname = protonation_map.get(key, resname)
+
+                if key in hydrogen_map:
+                    element = line[76:78].strip()
+                    atom_name = line[12:16].strip()
+                    if element == 'H' or atom_name.startswith('H'):
+                        continue  # Skip existing hydrogens for this residue
+
+                line = line[:6] + f"{atom_serial:5d}" + line[11:17] + new_resname.ljust(3) + line[20:]
+                f_out.write(line)
+                atom_serial += 1
+            else:
+                if current_key is not None and line.startswith('TER'):
+                    write_hydrogens(current_key)
+                    current_key = None
+                f_out.write(line)
+
+        if current_key is not None:
+            write_hydrogens(current_key)
 
 
 def extract_environment(input_pdb, histidine, cutoff):
@@ -1255,6 +1284,25 @@ def verify_tautomers(variants):
     return results
 
 
+def extract_histidine_hydrogen_lines(pdb_file, chain, resid):
+    """Extract all hydrogen atom lines for a specific histidine residue"""
+    hydrogen_lines = []
+    with open(pdb_file, 'r') as f:
+        for line in f:
+            if not line.startswith(('ATOM', 'HETATM')):
+                continue
+            if line[21] != chain:
+                continue
+            resnum = int(line[22:26].strip())
+            if resnum != resid:
+                continue
+            atom_name = line[12:16].strip()
+            element = line[76:78].strip() if len(line) >= 78 else atom_name[0]
+            if element == 'H' or atom_name.startswith('H'):
+                hydrogen_lines.append(line)
+    return hydrogen_lines
+
+
 def calculate_formal_charge(pdb_file):
     """
     Calculate formal charge based on residue types with proper counting
@@ -1597,6 +1645,7 @@ def qm_flipping_pipeline(input_pdb, output_pdb, args):
     
     # Process protonation states
     protonation_map = {}
+    hydrogen_map = {}
     histidine_results = []
     
     for (chain, resid), info in pka_values.items():
@@ -1720,8 +1769,11 @@ def qm_flipping_pipeline(input_pdb, output_pdb, args):
                         "Status": "Changed" if optimal != resname else "Unchanged"
                     })
                     
-                    # Add to global protonation map
+                    # Add to global protonation map and store hydrogens
                     protonation_map[(chain, resid)] = optimal
+                    hydrogen_lines = extract_histidine_hydrogen_lines(variants[optimal], chain, resid)
+                    if hydrogen_lines:
+                        hydrogen_map[(chain, resid)] = hydrogen_lines
                 
                 results.append(result_entry)
 
@@ -1772,8 +1824,8 @@ def qm_flipping_pipeline(input_pdb, output_pdb, args):
             print("\nNon-Histidine Protonation Changes:")
             print(tabulate(non_his_changes, headers="keys", tablefmt="grid", showindex=False))
         
-        # Update PDB with all protonation states
-        update_pdb_with_protonations(input_pdb, output_pdb, protonation_map)
+        # Update PDB with all protonation states and hydrogens
+        update_pdb_with_protonations(input_pdb, output_pdb, protonation_map, hydrogen_map)
         
         if skipped_histidines:
             print("\nSkipped Histidines:")
