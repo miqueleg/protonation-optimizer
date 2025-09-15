@@ -1155,6 +1155,171 @@ def validate_histidine_hydrogens(pdb_file, output_pdb):
     print(f"  Removed {len(atoms_to_remove)} excess hydrogens from histidine rings")
     return True
 
+def _format_pdb_atom_line(serial, name, resname, chain_id, resid_str, x, y, z, element):
+    """Create a PDB ATOM line with standard alignment for coordinates and names."""
+    # Ensure atom name alignment (right-justified in columns 13-16 unless starts with H)
+    atom_name = name.ljust(4) if name.startswith('H') and len(name) < 4 else name.rjust(4)
+    res_field = resname.ljust(3)
+    # Element field in columns 77-78
+    elem_field = element.rjust(2)
+    return (
+        f"ATOM  {serial:5d} {atom_name} {res_field} {chain_id}{resid_str}"
+        f"   {x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           {elem_field}\n"
+    )
+
+def enforce_histidine_tautomer_hydrogens(pdb_in, pdb_out):
+    """
+    Enforce consistency of H on histidine nitrogens based on residue name:
+    - HIE: exactly one HE2 near NE2; no H near ND1
+    - HID: exactly one HD1 near ND1; no H near NE2
+    If missing, add the correct H at a reasonable in-plane position using ring geometry.
+    If extra/wrong, remove and/or rename appropriately.
+    """
+    # Load all lines
+    with open(pdb_in, 'r') as f:
+        lines = [ln for ln in f]
+
+    # Collect ATOM/HETATM entries as dicts for easier processing
+    atoms = []
+    max_serial = 0
+    for ln in lines:
+        if not ln.startswith(('ATOM', 'HETATM')):
+            continue
+        serial = int(ln[6:11])
+        max_serial = max(max_serial, serial)
+        atoms.append({
+            'serial': serial,
+            'name': ln[12:16].strip(),
+            'resname': ln[17:20].strip(),
+            'chain': ln[21],
+            'resid': int(ln[22:26]),
+            'resid_str': ln[22:26],
+            'x': float(ln[30:38]),
+            'y': float(ln[38:46]),
+            'z': float(ln[46:54]),
+            'element': (ln[76:78].strip() if len(ln) >= 78 else ln[12:16].strip()[0]),
+            'raw': ln,
+            'keep': True,
+        })
+
+    # Group by (chain, resid)
+    from collections import defaultdict
+    by_res = defaultdict(list)
+    for a in atoms:
+        by_res[(a['chain'], a['resid'])].append(a)
+
+    import numpy as _np
+
+    def _norm(v):
+        n = _np.linalg.norm(v)
+        return v / n if n > 0 else v
+
+    def _add_h(target_res, name, pos):
+        nonlocal max_serial
+        max_serial += 1
+        resname = target_res[0]['resname']
+        chain = target_res[0]['chain']
+        resid_str = target_res[0]['resid_str']
+        return _format_pdb_atom_line(max_serial, name, resname, chain, resid_str, pos[0], pos[1], pos[2], 'H')
+
+    out_lines = []
+    # We'll regenerate only ATOM/HETATM lines with possible edits
+    atom_iter = iter(atoms)
+    for ln in lines:
+        if not ln.startswith(('ATOM', 'HETATM')):
+            # Non-atom lines are copied later; skip for now
+            continue
+        else:
+            break
+    # Build edited atoms per residue
+    edited = {}
+    for key, res_atoms in by_res.items():
+        # Only adjust HIE/HID residues
+        resname = res_atoms[0]['resname']
+        if resname not in {'HIE', 'HID'}:
+            edited[key] = [a['raw'] for a in res_atoms]
+            continue
+
+        # Find ring atoms
+        ring = {a['name']: a for a in res_atoms if a['name'] in {'ND1','NE2','CE1','CD2','CG'}}
+        if not all(k in ring for k in ('ND1','NE2','CE1','CD2','CG')):
+            # Cannot fix without ring; keep as-is
+            edited[key] = [a['raw'] for a in res_atoms]
+            continue
+
+        nd1 = ring['ND1']; ne2 = ring['NE2']; ce1 = ring['CE1']; cd2 = ring['CD2']; cg = ring['CG']
+        nd1_pos = _np.array([nd1['x'], nd1['y'], nd1['z']])
+        ne2_pos = _np.array([ne2['x'], ne2['y'], ne2['z']])
+        ce1_pos = _np.array([ce1['x'], ce1['y'], ce1['z']])
+        cd2_pos = _np.array([cd2['x'], cd2['y'], cd2['z']])
+        cg_pos  = _np.array([cg['x'],  cg['y'],  cg['z']])
+
+        # Identify existing N-attached hydrogens
+        nd1_h = [a for a in res_atoms if a['element']=='H' and _np.linalg.norm(_np.array([a['x'],a['y'],a['z']]) - nd1_pos) < 1.3]
+        ne2_h = [a for a in res_atoms if a['element']=='H' and _np.linalg.norm(_np.array([a['x'],a['y'],a['z']]) - ne2_pos) < 1.3]
+
+        keep_raw = []
+        # Keep all non-hydrogen atoms and non-N-attached hydrogens
+        for a in res_atoms:
+            if a in nd1_h or a in ne2_h:
+                continue
+            keep_raw.append(a['raw'])
+
+        # Compute target position and enforce
+        nh = 1.04
+        if resname == 'HID':
+            # Desired: one HD1 at ND1, none at NE2
+            # Position in-plane opposite of CG/CE1
+            v1 = cg_pos - nd1_pos
+            v2 = ce1_pos - nd1_pos
+            in_plane = -_norm(v1) - _norm(v2)
+            in_plane = _norm(in_plane)
+            pos = nd1_pos + in_plane * nh
+            # Add new HD1
+            keep_raw.append(_add_h(res_atoms, 'HD1', pos))
+        else:  # HIE
+            # Desired: one HE2 at NE2, none at ND1
+            v1 = ce1_pos - ne2_pos
+            v2 = cd2_pos - ne2_pos
+            in_plane = -_norm(v1) - _norm(v2)
+            in_plane = _norm(in_plane)
+            pos = ne2_pos + in_plane * nh
+            keep_raw.append(_add_h(res_atoms, 'HE2', pos))
+
+        edited[key] = keep_raw
+
+    # Reassemble output by walking original lines and swapping per-residue blocks
+    out = []
+    current_key = None
+    for ln in lines:
+        if ln.startswith(('ATOM','HETATM')):
+            chain = ln[21]
+            resid = int(ln[22:26])
+            key = (chain, resid)
+            if key != current_key:
+                # Flush previous residue atoms if any
+                if current_key is not None:
+                    # They are already appended when we see the first line of residue; so nothing here
+                    pass
+                current_key = key
+                # Instead of writing incoming atom lines, write our edited block for this residue
+                block = edited.get(key)
+                if block is not None:
+                    out.extend(block)
+                else:
+                    # Not edited (e.g., HETATM without residue parse), fall back to writing original lines for this residue
+                    # We'll collect on the fly until residue changes
+                    out.append(ln)
+            else:
+                # Skip subsequent original lines for this residue because we already wrote the edited block
+                continue
+        else:
+            out.append(ln)
+
+    with open(pdb_out, 'w') as f:
+        f.writelines(out)
+    return True
+
 def create_tautomer_variants(input_pdb, temp_dir):
     """
     Create both HID and HIE tautomer variants for energy comparison
@@ -1826,6 +1991,16 @@ def qm_flipping_pipeline(input_pdb, output_pdb, args):
         
         # Update PDB with all protonation states and hydrogens
         update_pdb_with_protonations(input_pdb, output_pdb, protonation_map, hydrogen_map)
+
+        # Final consistency pass: enforce nitrogen-hydrogen placement and naming
+        # for HIE/HID residues based on their assigned tautomer.
+        try:
+            _final_out = f"{os.path.splitext(output_pdb)[0]}_final.pdb"
+            enforce_histidine_tautomer_hydrogens(output_pdb, _final_out)
+            # Replace output with enforced version
+            shutil.move(_final_out, output_pdb)
+        except Exception as e:
+            print(f"Warning: final histidine enforcement failed: {e}")
         
         if skipped_histidines:
             print("\nSkipped Histidines:")
