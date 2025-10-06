@@ -1155,6 +1155,75 @@ def validate_histidine_hydrogens(pdb_file, output_pdb):
     print(f"  Removed {len(atoms_to_remove)} excess hydrogens from histidine rings")
     return True
 
+def _is_hydrogen_atom(atom_name, element_field):
+    """Return True if an ATOM/HETATM line corresponds to a hydrogen."""
+    element = (element_field or "").strip().upper()
+    if element:
+        return element == 'H'
+
+    stripped = atom_name.strip().upper()
+    if not stripped:
+        return False
+
+    return stripped.startswith('H') or stripped.endswith('H')
+
+
+def remove_duplicate_hydrogens(pdb_file, output_pdb=None, tolerance=1e-3):
+    """Remove duplicate hydrogen entries that share coordinates within tolerance."""
+
+    if output_pdb is None:
+        output_pdb = pdb_file
+
+    with open(pdb_file, 'r') as handle:
+        lines = handle.readlines()
+
+    cleaned_lines = []
+    hydrogen_coords = []
+    heavy_coords = []
+    duplicates_removed = 0
+
+    for line in lines:
+        if not line.startswith(('ATOM', 'HETATM')):
+            cleaned_lines.append(line)
+            continue
+
+        atom_name = line[12:16].strip()
+        element_field = line[76:78] if len(line) >= 78 else ""
+        coords = np.array([
+            float(line[30:38]),
+            float(line[38:46]),
+            float(line[46:54])
+        ])
+
+        if _is_hydrogen_atom(atom_name, element_field):
+            is_duplicate = False
+            for ref in hydrogen_coords:
+                if np.linalg.norm(coords - ref) < tolerance:
+                    duplicates_removed += 1
+                    is_duplicate = True
+                    break
+            if is_duplicate:
+                continue
+            hydrogen_coords.append(coords)
+        else:
+            for ref in heavy_coords:
+                if np.linalg.norm(coords - ref) < tolerance:
+                    raise ValueError(
+                        "Detected overlapping heavy atoms while sanitizing cluster PDBs."
+                    )
+            heavy_coords.append(coords)
+
+        cleaned_lines.append(line)
+
+    with open(output_pdb, 'w') as handle:
+        handle.writelines(cleaned_lines)
+
+    if duplicates_removed:
+        print(f"  Removed {duplicates_removed} duplicate hydrogens (<{tolerance:.1e} Å apart)")
+
+    return duplicates_removed
+
+
 def _format_pdb_atom_line(serial, name, resname, chain_id, resid_str, x, y, z, element):
     """Create a PDB ATOM line with standard alignment for coordinates and names."""
     # Ensure atom name alignment (right-justified in columns 13-16 unless starts with H)
@@ -1402,12 +1471,13 @@ def create_tautomer_variants(input_pdb, temp_dir):
         print(f"  ERROR: {str(e)}")
         print(f"  Could not create tautomer variants. Check if histidine has all required atoms.")
         return {}
-    # Final validation of created tautomers
-    for tautomer, pdb_file in variants.items():
+    # Final validation and deduplication of created tautomers
+    for tautomer, pdb_file in list(variants.items()):
         tautomer_final = os.path.join(temp_dir, f"{tautomer}_final.pdb")
         validate_histidine_tautomers(pdb_file, tautomer_final)
+        remove_duplicate_hydrogens(tautomer_final, tautomer_final)
         variants[tautomer] = tautomer_final
-        
+
     return variants
 
 
@@ -1586,23 +1656,28 @@ def run_xtb_calculation(pdb_file, temp_dir, protonation, system_charge=None, xtb
     """
     calc_dir = os.path.join(temp_dir, protonation)
     os.makedirs(calc_dir, exist_ok=True)
-    
+
     # Create permanent log directory
     os.makedirs(log_dir, exist_ok=True)
-    
+
     # Extract residue and chain info from temp_dir path
     chain_res = os.path.basename(os.path.dirname(calc_dir))
-    
+
     # Create a unique log file name
     log_file_base = os.path.join(log_dir, f"{chain_res}_{protonation}")
     xtb_log = f"{log_file_base}.out"
     xtb_error = f"{log_file_base}.err"
-    
+
+    # Sanitize the input PDB to avoid duplicate hydrogens before conversion
+    sanitized_pdb = os.path.join(calc_dir, f"{protonation}_sanitized.pdb")
+    remove_duplicate_hydrogens(pdb_file, sanitized_pdb)
+    pdb_source = sanitized_pdb
+
     xyz_file = os.path.join(calc_dir, "input.xyz")
     obabel_err = ""
     try:
         result = subprocess.run(
-            ["obabel", pdb_file, "-O", xyz_file], 
+            ["obabel", pdb_source, "-O", xyz_file], 
             stdout=subprocess.PIPE, 
             stderr=subprocess.PIPE,
             text=True
@@ -1614,22 +1689,22 @@ def run_xtb_calculation(pdb_file, temp_dir, protonation, system_charge=None, xtb
     if not os.path.exists(xyz_file):
         # Fallback: write a minimal XYZ directly from the PDB
         try:
-            _pdb_to_xyz(pdb_file, xyz_file)
+            _pdb_to_xyz(pdb_source, xyz_file)
         except Exception as e:
             with open(xtb_error, 'w') as f:
                 f.write(f"Failed to convert PDB to XYZ via obabel. {obabel_err}\n")
                 f.write(f"Fallback PDB->XYZ conversion also failed: {e}\n")
             raise RuntimeError("Failed to convert PDB to XYZ:")
-    
+
     # Determine total system charge if not specified
     if system_charge is None:
-        system_charge = calculate_formal_charge(pdb_file)
-    
+        system_charge = calculate_formal_charge(pdb_source)
+
     print(f"    Using system charge for {protonation}: {system_charge}")
-    
+
     # Create constraints file using the simplified method with commas instead of spaces
     constraints_file = os.path.join(calc_dir, "constraints.inp")
-    create_constraints_file(pdb_file, constraints_file)
+    create_constraints_file(pdb_source, constraints_file)
     
     # Save constraints file to logs
     shutil.copy(constraints_file, f"{log_file_base}_constraints.inp")
@@ -1660,8 +1735,17 @@ def run_xtb_calculation(pdb_file, temp_dir, protonation, system_charge=None, xtb
         # Provide charge via .CHRG in the working directory
         chrg_path = os.path.join(calc_dir, ".CHRG")
         try:
+            if isinstance(system_charge, (int, float)):
+                charge_str = f"{system_charge:.6f}" if isinstance(system_charge, float) else str(system_charge)
+                charge_str = charge_str.rstrip('0').rstrip('.') if '.' in charge_str else charge_str
+            else:
+                charge_str = str(system_charge)
+
+            if not charge_str:
+                charge_str = "0"
+
             with open(chrg_path, 'w') as cf:
-                cf.write(f"{int(system_charge)}\n")
+                cf.write(f"{charge_str}\n")
         except Exception as e:
             with open(xtb_error, 'a') as errf:
                 errf.write(f"Failed to write .CHRG file: {e}\n")
