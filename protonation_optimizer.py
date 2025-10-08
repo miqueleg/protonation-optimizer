@@ -9,9 +9,21 @@ import os
 import sys
 import tempfile
 import subprocess
+import shlex
 import pandas as pd
 import numpy as np
 import argparse
+import warnings
+
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    try:
+        from Bio import BiopythonWarning  # type: ignore
+    except Exception:  # pragma: no cover - best effort suppression
+        BiopythonWarning = None  # type: ignore
+    else:
+        warnings.filterwarnings("ignore", category=BiopythonWarning)
+
 from Bio.PDB import PDBParser
 import mdtraj as md
 from tabulate import tabulate
@@ -90,32 +102,65 @@ def find_histidines(pdb_file):
     return histidines
 
 def run_propka_predictions(pdb_file):
-    """Run PropKa3 and return dictionary of ALL titratable residue pKa values with proper parsing"""
+    """Run PropKa and return dictionary of ALL titratable residue pKa values with proper parsing"""
     print("Running PropKa3 for pKa predictions...")
-    pwd = os.getcwd()
-    os.chdir(os.path.dirname(os.path.abspath(pdb_file)))
-    try:
-        # Try the standard entry point first
-        result = subprocess.run(
-            ["propka3", pdb_file],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-    except FileNotFoundError:
-        print("PropKa3 not found in PATH; skipping pKa predictions.")
-        os.chdir(pwd)
+
+    work_dir = os.path.dirname(os.path.abspath(pdb_file)) or "."
+    pdb_basename = os.path.basename(pdb_file)
+
+    candidate_commands = []
+
+    custom_command = os.environ.get("PROPKA_EXEC")
+    if custom_command:
+        candidate_commands.append(shlex.split(custom_command))
+
+    for default_cmd in ("propka3", "propka31", "propka"):
+        candidate_commands.append([default_cmd])
+
+    result = None
+    used_command = None
+
+    for command in candidate_commands:
+        executable = shutil.which(command[0])
+        if executable is None:
+            continue
+
+        try:
+            result = subprocess.run(
+                command + [pdb_basename],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=work_dir,
+                check=False,
+            )
+        except FileNotFoundError:
+            continue
+
+        if result.returncode == 0:
+            used_command = " ".join(command)
+            break
+
+        stderr_lower = result.stderr.lower()
+        if "no module named" in stderr_lower and "propka" in stderr_lower:
+            print(
+                "PropKa executable is available but its Python package is missing. "
+                "Install it with 'pip install propka' or provide a working executable via the "
+                "PROPKA_EXEC environment variable."
+            )
+            return {}
+
+        print(f"PropKa3 Error when running '{' '.join(command)}': {result.stderr.strip()}")
+
+    if result is None or used_command is None:
+        print("PropKa executable not found in PATH; skipping pKa predictions.")
         return {}
-    
-    # Check for errors
-    if result.returncode != 0:
-        print(f"PropKa3 Error: {result.stderr}")
-        os.chdir(pwd)
-        return {}
+
+    print(f"  PropKa command used: {used_command}")
 
     pka_values = {}
     try:
-        propka_out_file = pdb_file.split('/')[-1].split('.')[0]+'.pka'
+        propka_out_file = os.path.join(work_dir, os.path.splitext(pdb_basename)[0] + '.pka')
         with open(propka_out_file, 'r') as propkaout:
             # Flag to track when we find the summary section
             in_summary = False
@@ -163,8 +208,7 @@ def run_propka_predictions(pdb_file):
                                 continue
     except Exception as e:
         print(f"Error parsing PropKa output: {e}")
-    
-    os.chdir(pwd)
+
     return pka_values
 
 
