@@ -28,7 +28,7 @@ This tool is particularly useful for preparing protein structures for molecular 
 - Open Babel (for hydrogen placement)
 - xTB (for quantum mechanical calculations)
 - g-xtb (optional, single point calculations only)
-- PropKa3
+- PropKa3 (installable via `pip install propka`)
 
 ## Installation
 
@@ -39,7 +39,8 @@ This tool is particularly useful for preparing protein structures for molecular 
 3. Install xTB
 3.2. Install g-xtb if interested on using g-xtb on SP calculations 
 
-5. Install PropKa3
+5. Install PropKa3. The easiest route is using `pip install propka`, which provides the
+   `propka3` command required by the optimizer.
    
 6. Clone this repository:
 ```
@@ -70,6 +71,20 @@ Using g-xtb engine for single point calculations (SP only):
 python protonation_optimizer.py input.pdb output.pdb --engine g-xtb --mode SP
 ```
 Note: g-xtb is supported only for SP calculations. Optimization with g-xtb is not available because gradient calculations are numerical (slow) in version 1.1 of g-xtb.
+
+### PropKa executable discovery
+
+The optimizer looks for PropKa in the following order:
+
+1. The command specified via the `PROPKA_EXEC` environment variable (useful when
+   PropKa is installed in a non-standard location).
+2. `propka3`
+3. `propka31`
+4. `propka`
+
+If none of these commands are available, or if PropKa is installed without its
+Python package, the optimizer will skip pKa predictions and print a clear hint
+for resolving the issue.
 
 This will:
 0. Run PropKa3 and determine initial protonations
