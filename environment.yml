@@ -1,0 +1,16 @@
+name: protonation-optimizer
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9
+  - numpy
+  - pandas
+  - mdtraj
+  - biopython
+  - tabulate
+  - openbabel
+  - xtb
+  - pip
+  - pip:
+      - propka

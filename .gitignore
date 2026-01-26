@@ -1,0 +1,5 @@
+# xTB/g-xtb logs and artifacts
+xtb_logs/
+
+# Generated result tables
+*_results.csv

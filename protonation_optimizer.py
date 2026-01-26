@@ -1582,11 +1582,13 @@ def extract_histidine_hydrogen_lines(pdb_file, chain, resid):
     return hydrogen_lines
 
 
-def calculate_formal_charge(pdb_file):
+def calculate_formal_charge(pdb_file, custom_residue_charges=None):
     """
     Calculate formal charge based on residue types with proper counting
     and charge capping to prevent extreme values
     """
+    if custom_residue_charges is None:
+        custom_residue_charges = {}
     residue_charges = {
         'ARG': 1,   # Positively charged
         'LYS': 1,   # Positively charged
@@ -1631,6 +1633,10 @@ def calculate_formal_charge(pdb_file):
         'K': 1,     # Potassium ion
         'ZN': 2     # Zinc ion
     }
+
+    # Apply user-defined residue charges (override defaults if provided)
+    for resname, charge in custom_residue_charges.items():
+        residue_charges[resname] = charge
     
     # Count residues and their charges
     residue_counts = {}
@@ -1672,7 +1678,7 @@ def calculate_formal_charge(pdb_file):
     # Print debugging information
     print(f"    Residue charge contributions: {residue_counts}")
     if unknown_residues:
-        print(f"    Unknown residues (assumed neutral): {', '.join(unknown_residues)}")
+        print(f"    Unknown residues (assumed neutral): {', '.join(sorted(unknown_residues))}")
     print(f"    Total charge (capped if extreme): {total_charge}")
     
     return total_charge
@@ -1693,7 +1699,7 @@ def create_constraints_file(pdb_file, constraints_file):
     return
 
 
-def run_xtb_calculation(pdb_file, temp_dir, protonation, system_charge=None, xtbopt='loose', solvent='ether', log_dir="xtb_logs", mode='opt', engine='xtb'):
+def run_xtb_calculation(pdb_file, temp_dir, protonation, system_charge=None, xtbopt='loose', solvent='ether', log_dir="xtb_logs", mode='opt', engine='xtb', custom_residue_charges=None):
     """
     Run xTB calculation with fixed heavy atoms, ether solvent, and proper logging
     mode: 'opt' for optimization (default), 'SP' for single point calculation
@@ -1742,7 +1748,7 @@ def run_xtb_calculation(pdb_file, temp_dir, protonation, system_charge=None, xtb
 
     # Determine total system charge if not specified
     if system_charge is None:
-        system_charge = calculate_formal_charge(pdb_source)
+        system_charge = calculate_formal_charge(pdb_source, custom_residue_charges=custom_residue_charges)
 
     print(f"    Using system charge for {protonation}: {system_charge}")
 
@@ -1921,12 +1927,54 @@ def create_no_hydrogens_pdb(input_pdb, output_pdb):
                     continue
             f_out.write(line)
 
+def parse_custom_residue_charges(entries):
+    """
+    Parse custom residue charges provided as RES=CHARGE or RES:CHARGE.
+    Returns dict of {RESNAME: charge}. Last definition wins.
+    """
+    custom = {}
+    for entry in entries or []:
+        if not entry:
+            continue
+        if "=" in entry:
+            res_part, charge_part = entry.split("=", 1)
+        elif ":" in entry:
+            res_part, charge_part = entry.split(":", 1)
+        else:
+            raise ValueError(
+                f"Invalid custom residue format '{entry}'. Use RES=CHARGE (e.g., HEM=-2)."
+            )
+
+        resname = res_part.strip().upper()
+        if not resname:
+            raise ValueError(f"Invalid residue name in custom residue entry '{entry}'.")
+        if len(resname) > 4:
+            raise ValueError(
+                f"Residue name '{resname}' is too long for PDB fields (max 4 characters)."
+            )
+
+        try:
+            charge = float(charge_part.strip())
+            if charge.is_integer():
+                charge = int(charge)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid charge '{charge_part}' in custom residue entry '{entry}'."
+            ) from exc
+
+        custom[resname] = charge
+
+    return custom
+
 def qm_flipping_pipeline(input_pdb, output_pdb, args):
     """Main pipeline function with expanded PropKa3 integration for all titratable residues"""
     # Create log directory
     log_dir = "xtb_logs"
     os.makedirs(log_dir, exist_ok=True)
     print(f"xTB logs will be saved to: {os.path.abspath(log_dir)}")
+    custom_residue_charges = getattr(args, "custom_residue_charges", {}) or {}
+    if custom_residue_charges:
+        print(f"Custom residue charges: {custom_residue_charges}")
         
     # Run PropKa3 predictions for all titratable residues
     pka_values = run_propka_predictions(input_pdb)
@@ -2041,7 +2089,7 @@ def qm_flipping_pipeline(input_pdb, output_pdb, args):
                     try:
                         energies[tautomer] = run_xtb_calculation(
                             pdb_file, temp_dir, tautomer,
-                            system_charge=calculate_formal_charge(pdb_file),
+                            system_charge=calculate_formal_charge(pdb_file, custom_residue_charges),
                             log_dir=log_dir, xtbopt=args.xtbopt, solvent=args.solvent, mode=args.mode, engine=args.engine
                         )
                     except Exception as e:
@@ -2156,10 +2204,20 @@ if __name__ == "__main__":
                         help='Quantum engine: xtb (default) or g-xtb (SP only)')
     parser.add_argument("--ph", type=float, default=7.0,
                     help="Target pH for protonation state prediction (default: 7.0)")
+    parser.add_argument(
+        "--custom-residue",
+        action="append",
+        default=[],
+        help="Custom residue charge as RES=CHARGE (repeatable). Example: --custom-residue HEM=-2"
+    )
 
 
     args = parser.parse_args()
     # Early validation: g-xtb is SP-only
     if args.engine == 'g-xtb' and args.mode != 'SP':
         raise SystemExit("Error: g-xtb engine supports only single point mode. Use '--mode SP' or switch to '--engine xtb'.")
+    try:
+        args.custom_residue_charges = parse_custom_residue_charges(args.custom_residue)
+    except ValueError as exc:
+        raise SystemExit(f"Error: {exc}") from exc
     qm_flipping_pipeline(args.input_pdb, args.output_pdb, args)

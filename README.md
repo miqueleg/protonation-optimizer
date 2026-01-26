@@ -47,6 +47,14 @@ This tool is particularly useful for preparing protein structures for molecular 
 git clone https://github.com/miqueleg/protonation-optimizer
 ```
 
+### Conda environment (recommended)
+
+An `environment.yml` is provided for a ready-to-use Conda environment:
+```
+conda env create -f environment.yml
+conda activate protonation-optimizer
+```
+
 ## Usage
 
 Basic usage:
@@ -71,6 +79,19 @@ Using g-xtb engine for single point calculations (SP only):
 python protonation_optimizer.py input.pdb output.pdb --engine g-xtb --mode SP
 ```
 Note: g-xtb is supported only for SP calculations. Optimization with g-xtb is not available because gradient calculations are numerical (slow) in version 1.1 of g-xtb.
+
+Custom residues, substrates, or cofactors (default charge 0 unless specified):
+```
+python protonation_optimizer.py input.pdb output.pdb --custom-residue HEM=-2 --custom-residue FAD=-1
+```
+
+### Quick test (conda environment)
+
+An example PDB is included at `examples/minimal_test.pdb`. You can run two fast SP-mode checks:
+```
+conda run -n protonation-optimizer python protonation_optimizer.py examples/minimal_test.pdb /tmp/minimal_out_no_custom.pdb --mode SP
+conda run -n protonation-optimizer python protonation_optimizer.py examples/minimal_test.pdb /tmp/minimal_out_custom.pdb --mode SP --custom-residue HEM=-2
+```
 
 ### PropKa executable discovery
 
@@ -130,4 +151,3 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request
-
