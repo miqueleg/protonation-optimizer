@@ -1,4 +1,4 @@
-# Protonation State Optimizer
+# Protonation-Optimizer
 
 A quantum mechanics-based tool for determining optimal aminoacidic protonation states (focusing on Histidines) in protein structures for molecular dynamics simulations.
 
